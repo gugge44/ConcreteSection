@@ -1217,13 +1217,13 @@ class RCSection:
             Iu, Iu_lg = self.I_u(), self.I_u(t=t, creep=creep)
             Mcr, Mcr_lg = self.M_cr(), self.M_cr(t=t, creep=creep)
             table_data.extend([
-                ["$I_{u,st}$ (uncracked, short)", f"{ef(Iu)} mm⁴"],
-                ["$I_{c,st}$ (cracked, short)", f"{ef(Ic)} mm⁴"],
-                ["$M_{cr,st}$ (cracking, short)", f"{ef(Mcr/1e6)} kNm"],
+                ["uncracked, short ($I_{u,st}$)", f"{ef(Iu)} mm⁴"],
+                ["cracked, short ($I_{c,st}$)", f"{ef(Ic)} mm⁴"],
+                ["cracking, short ($M_{cr,st}$)", f"{ef(Mcr/1e6)} kNm"],
                 ["Long-term params", f"t={ef(t/365)}yrs, φ={ef(creep)}"],
-                ["$I_{u,lt}$ (uncracked, long)", f"{ef(Iu_lg)} mm⁴"],
-                ["$I_{c,lt}$ (cracked, long)", f"{ef(Ic_lg)} mm⁴"],
-                ["$M_{cr,lt}$ (cracking, long)", f"{ef(Mcr_lg/1e6)} kNm"],
+                ["uncracked, long ($I_{u,lt}$)", f"{ef(Iu_lg)} mm⁴"],
+                ["cracked, long ($I_{c,lt}$)", f"{ef(Ic_lg)} mm⁴"],
+                ["cracking, long ($M_{cr,lt}$)", f"{ef(Mcr_lg/1e6)} kNm"],
             ])
         if incl_uls:
             M, _, na_uls = self.M_Rd(return_F=True, incl_x=True)
