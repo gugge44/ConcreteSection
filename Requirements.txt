@@ -1,0 +1,22 @@
+# Core scientific stack - pin major to avoid breaking changes
+numpy>=2.4,<3.0
+scipy>=1.17,<2.0
+pandas>=3.0,<4.0
+matplotlib>=3.10,<4.0
+sympy>=1.13
+
+# Geometry / meshing
+ladybug-geometry>=1.33
+MeshPy>=2022.1
+
+# Units
+Pint>=0.25
+
+# Imaging
+Pillow>=12.0
+
+# Document generation
+python-docx>=1.1
+
+# UI
+streamlit>=1.52,<2.0
