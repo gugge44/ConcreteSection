@@ -3,27 +3,31 @@ RC Core Section Analysis Streamlit App
 ======================================
 Wraps CoreDesigner.CoreSection in an interactive UI.
 
-Defaults vs the beam app:
-- as_square = True   (rebar modelled as equivalent squares, default for cores)
-- remove_conc_to_rebar = False  (concrete area not netted off for rebar)
+A core is defined by a list of straight wall centre-lines. Each wall row
+in the input table carries its own thickness, cover and reinforcement
+detailing. Per-face values (face 0 / face 1, i.e. the two sides of the
+wall along its centre-line normal) can be left blank to fall back to the
+sidebar defaults, which is how you'd typically detail a core in practice.
 
 Features
 --------
 1. Material property inputs in the sidebar (concrete, steel, factors).
-2. A single editable table of walls with dynamic add/delete rows:
-   x1, y1, x2, y2, thk, cover, v_dia_in, v_dia_out, v_spc_in, v_spc_out,
-   h_dia_in, h_dia_out, h_spc_in, h_spc_out
-3. Single section-level toggle for verts_outer_layer (vertical rebar
-   placed outside the horizontals).
-4. Live preview of wall polygons and distributed verticals.
-5. "Run Analysis" produces:
-   - sec.plot(incl_uls=True, incl_stiffness=True, incl_dims=False)
-   - sec.plot_FM_graph()
-6. "Export to DOCX" writes a CalcDoc report containing both plots and
-   a tabulated section property summary.
+2. Per-wall detailing defaults in the sidebar, used when table cells are blank.
+3. Global "verticals as outer layer" toggle (passes through to verts_outer_layer).
+4. Editable table of wall lines: x1, y1, x2, y2, thk and the per-face
+   reinforcement inputs CoreSection accepts (v_dia_0/1, v_s_0/1, h_dia_0/1,
+   h_s_0/1, cover_0/1).
+5. Live geometry preview that draws the wall centre-lines and their
+   projected thicknesses, plus a small face-0 marker so the user can see
+   which side is which.
+6. "Run Analysis" builds CoreSection and produces:
+   - core.v_section.plot(incl_uls=True, incl_stiffness=True, incl_dims=False)
+   - core.v_section.plot_FM_graph()
+7. "Export to DOCX" writes a CalcDoc report with both plots and a
+   tabulated section property summary.
 
 Usage:
-    streamlit run RC_core_section_app.py
+    streamlit run Core_SL.py
 """
 
 from __future__ import annotations
@@ -36,24 +40,23 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon as MPLPolygon, Circle, Rectangle
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 # ---------------------------------------------------------------------------
-# Module imports (CoreDesigner + CalcDoc). Imports fail loud and early.
+# Module imports. Fail loud and early.
 # ---------------------------------------------------------------------------
 try:
     from CoreDesigner import CoreSection
-    from BugBasics import Point, Line
+    from BugBasics import Line
 except ImportError as e:
-    st.set_page_config(page_title="RC Core Section", layout="wide")
+    st.set_page_config(page_title="Core Section", layout="wide")
     st.error(f"Could not import CoreDesigner / BugBasics: {e}")
     st.info(
-        "Place CoreDesigner.py, RC_beam_mesh.py, BugBasics.py, BugPoly.py, "
-        "Mesh.py, Notation.py on the Python path next to this script."
+        "Place CoreDesigner.py and its dependencies (BugBasics, BugPoly, "
+        "RC_beam_mesh, Mesh, Notation) on the Python path next to this script."
     )
     st.stop()
 
@@ -69,52 +72,87 @@ from Notation import eng_format as ef
 
 
 # ---------------------------------------------------------------------------
-# Page config and defaults
+# Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="RC Core Section Analysis",
-    page_icon="\U0001f3db",
+    page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
-# Column names for the walls table. Kept short to fit on screen.
+# ---------------------------------------------------------------------------
+# Wall table schema
+# ---------------------------------------------------------------------------
+# Each wall row is fully defined by these columns. Per-face inputs may be
+# left blank, in which case the sidebar defaults are substituted at build
+# time. Geometry columns (x1,y1,x2,y2,thk) must be present.
 WALL_COLS = [
-    "x1", "y1", "x2", "y2",
-    "thk", "cover",
-    "v_dia_in", "v_dia_out",
-    "v_spc_in", "v_spc_out",
-    "h_dia_in", "h_dia_out",
-    "h_spc_in", "h_spc_out",
+    "x1 (mm)", "y1 (mm)", "x2 (mm)", "y2 (mm)",
+    "thk (mm)",
+    "v_dia_0 (mm)", "v_dia_1 (mm)",
+    "v_s_0 (mm)",   "v_s_1 (mm)",
+    "h_dia_0 (mm)", "h_dia_1 (mm)",
+    "h_s_0 (mm)",   "h_s_1 (mm)",
+    "cover_0 (mm)", "cover_1 (mm)",
 ]
 
+GEOM_COLS = ["x1 (mm)", "y1 (mm)", "x2 (mm)", "y2 (mm)", "thk (mm)"]
 
-def _default_walls() -> pd.DataFrame:
-    """Default geometry: a 3000 x 3000 C-shaped core with 250 mm walls.
 
-    Three walls forming a 'C' open on the right:
-      - bottom: (0,0) -> (3000,0)
-      - left:   (0,0) -> (0,3000)
-      - top:    (0,3000) -> (3000,3000)
-
-    Verticals T16 @ 200 ctrs each face, horizontals T12 @ 200 ctrs each face,
-    cover 40 mm.
-    """
-    rows = [
-        # x1, y1, x2,   y2,   thk, cover, vDi, vDo, vSi, vSo, hDi, hDo, hSi, hSo
-        [   0,  0, 3000,    0, 250,    40,  16,  16, 200, 200,  12,  12, 200, 200],
-        [   0,  0,    0, 3000, 250,    40,  16,  16, 200, 200,  12,  12, 200, 200],
-        [   0,3000, 3000, 3000, 250,    40,  16,  16, 200, 200,  12,  12, 200, 200],
+def _wall_row_from_defaults(x1, y1, x2, y2, thk, defaults) -> list:
+    """Build a single fully-populated wall row from the geometry plus the
+    sidebar detailing defaults. No NaNs in the resulting row."""
+    return [
+        x1, y1, x2, y2, thk,
+        defaults["v_dia"], defaults["v_dia"],
+        defaults["v_s"],   defaults["v_s"],
+        defaults["h_dia"], defaults["h_dia"],
+        defaults["h_s"],   defaults["h_s"],
+        defaults["cover"], defaults["cover"],
     ]
-    return pd.DataFrame(rows, columns=WALL_COLS, dtype=float)
+
+
+def _default_walls(defaults: dict) -> np.ndarray:
+    """A simple 3000 x 3000 C-shape: three walls forming an open channel.
+
+    Wall 1: left flange, vertical
+    Wall 2: web, horizontal at the bottom
+    Wall 3: right flange, vertical
+    All walls are 300 mm thick. Every cell is populated with the supplied
+    detailing defaults. Returns an (N_walls, 15) float ndarray.
+
+    State is stored as ndarray rather than DataFrame on purpose: feeding a
+    DataFrame into st.data_editor and writing the editor's return value
+    back into the same session_state slot creates a reactive identity
+    loop that re-renders the widget on every rerun. The fix (mirroring
+    RC_beam_SL.py) is to store an ndarray, build a fresh DataFrame each
+    rerun, and convert the editor's return back to ndarray via .to_numpy
+    before stashing -- that type round-trip breaks the loop.
+    """
+    geom_rows = [
+        # x1,    y1,    x2,    y2,   thk
+        (   0.0,    0.0,    0.0, 3000.0, 300.0),
+        (   0.0,    0.0, 3000.0,    0.0, 300.0),
+        (3000.0,    0.0, 3000.0, 3000.0, 300.0),
+    ]
+    data = [_wall_row_from_defaults(*r, defaults) for r in geom_rows]
+    return np.array(data, dtype=float)
+
+
+# Defaults used the very first time the page loads, before the sidebar
+# widgets have rendered. The sidebar can later re-seed the table on demand.
+_BOOT_DEFAULTS = dict(v_dia=16.0, v_s=200.0, h_dia=12.0, h_s=200.0, cover=30.0)
 
 
 def _init_state():
     if "walls" not in st.session_state:
-        st.session_state.walls = _default_walls()
-    if "section" not in st.session_state:
-        st.session_state.section = None
+        st.session_state.walls = _default_walls(_BOOT_DEFAULTS)
+    if "core" not in st.session_state:
+        st.session_state.core = None
+    if "preview_fig" not in st.session_state:
+        st.session_state.preview_fig = None
     if "plot_fig" not in st.session_state:
         st.session_state.plot_fig = None
     if "fm_fig" not in st.session_state:
@@ -127,185 +165,29 @@ _init_state()
 
 
 # ---------------------------------------------------------------------------
-# Preview plot helpers
+# Wall row -> CoreSection inputs
 # ---------------------------------------------------------------------------
-def _wall_polygon_corners(x1, y1, x2, y2, thk):
-    """Return the 4 corner points of a wall extruded perpendicular to its
-    centreline by +/- thk/2. Matches CoreDesigner's SimplePolygon.from_polyline
-    convention (offset along the line normal)."""
-    dx = x2 - x1
-    dy = y2 - y1
-    L = float(np.hypot(dx, dy))
-    if L < 1e-9:
-        return None
-    # Unit normal (rotate tangent 90 CCW)
-    nx = -dy / L
-    ny = dx / L
-    half = thk / 2.0
-    return np.array([
-        [x1 + nx * half, y1 + ny * half],
-        [x2 + nx * half, y2 + ny * half],
-        [x2 - nx * half, y2 - ny * half],
-        [x1 - nx * half, y1 - ny * half],
-    ])
+def _fill_with_default(val, default):
+    """Treat NaN / None / blank as 'use the default'."""
+    if val is None:
+        return float(default)
+    try:
+        f = float(val)
+        if not np.isfinite(f):
+            return float(default)
+        return f
+    except (TypeError, ValueError):
+        return float(default)
 
 
-def _wall_bar_positions(x1, y1, x2, y2, thk, cover,
-                        v_dia_in, v_dia_out, v_spc_in, v_spc_out,
-                        h_dia_in, h_dia_out,
-                        verts_outer_layer):
-    """Distribute vertical bars along both faces of a wall, replicating
-    CoreDesigner's logic. Used for live preview only; the analysis itself
-    goes through CoreSection which does the same thing internally.
+def df_to_core_inputs(df: pd.DataFrame, defaults: dict):
+    """Convert the wall table to the per-wall arrays CoreSection expects.
 
-    Returns (centres_inner, dia_inner, centres_outer, dia_outer) where
-    "inner" is the face on the negative-normal side and "outer" the
-    positive-normal side (signs match the n-vector convention).
+    Returns a dict ready to splat into CoreSection(...).
     """
-    dx = x2 - x1
-    dy = y2 - y1
-    L = float(np.hypot(dx, dy))
-    if L < 1e-9:
-        return np.empty((0, 2)), [], np.empty((0, 2)), []
-    tx = dx / L
-    ty = dy / L
-    # Normal (90 CCW)
-    nx = -ty
-    ny = tx
-
-    half = thk / 2.0
-    # Effective offset from centreline of each face
-    # Inner = side 0 (positive normal in CoreDesigner indexing of bar_lines):
-    # bar_lines[k] = wall.move(thk_ef[k] * n) where thk_ef = [-thk/2+c_add[0], thk/2-c_add[1]]
-    # So face 0 sits at -half + c_add_0 along n, face 1 at +half - c_add_1.
-    c_add_0 = cover + v_dia_in / 2 + (0 if verts_outer_layer else h_dia_in)
-    c_add_1 = cover + v_dia_out / 2 + (0 if verts_outer_layer else h_dia_out)
-    off_0 = -half + c_add_0
-    off_1 = half - c_add_1
-
-    def _along_line(spc, off):
-        # half_shift=True: bars are placed at half-spacing from each end,
-        # one bar at (s/2, 3s/2, ...) along the line, mirroring arange(half_shift=True)
-        if spc <= 0:
-            return np.empty((0, 2))
-        n_bars = int(np.floor(L / spc))
-        # If n_bars*spc < L, distribute remaining gap as a half-shift each end.
-        # CoreDesigner's PolyLine.arange(s, half_shift=True) typically places
-        # bars at s/2, 3s/2, ... up to L - s/2. We replicate that.
-        if n_bars < 1:
-            return np.empty((0, 2))
-        # bar positions from line start
-        ss = (np.arange(n_bars) + 0.5) * spc
-        # if last bar would overshoot L - small tol, ok; if there's a remainder
-        # gap at both ends, half_shift means start offset = (L - (n_bars-1)*spc) / 2
-        # Use that more accurate form:
-        start = (L - (n_bars - 1) * spc) / 2.0
-        ss = start + np.arange(n_bars) * spc
-        pts = np.column_stack([
-            x1 + tx * ss + nx * off,
-            y1 + ty * ss + ny * off,
-        ])
-        return pts
-
-    pts_in = _along_line(v_spc_in, off_0)
-    pts_out = _along_line(v_spc_out, off_1)
-    dia_in = np.full(len(pts_in), v_dia_in)
-    dia_out = np.full(len(pts_out), v_dia_out)
-    return pts_in, dia_in, pts_out, dia_out
-
-
-def plot_section_preview(walls_df: pd.DataFrame,
-                          verts_outer_layer: bool) -> plt.Figure:
-    fig, ax = plt.subplots(figsize=(7, 7), dpi=90)
-
-    if len(walls_df) == 0:
-        ax.set_title("Add walls to begin")
-        ax.set_aspect("equal")
-        ax.grid(True, alpha=0.3)
-        return fig
-
-    all_xy = []  # for setting axis limits
-
-    for i, row in walls_df.iterrows():
-        try:
-            x1, y1, x2, y2 = float(row.x1), float(row.y1), float(row.x2), float(row.y2)
-            thk = float(row.thk)
-            cover = float(row.cover)
-            v_dia_in, v_dia_out = float(row.v_dia_in), float(row.v_dia_out)
-            v_spc_in, v_spc_out = float(row.v_spc_in), float(row.v_spc_out)
-            h_dia_in, h_dia_out = float(row.h_dia_in), float(row.h_dia_out)
-        except (ValueError, TypeError):
-            continue
-
-        corners = _wall_polygon_corners(x1, y1, x2, y2, thk)
-        if corners is None:
-            continue
-        all_xy.append(corners)
-
-        poly = MPLPolygon(
-            corners, closed=True,
-            facecolor="#cce6ff", edgecolor="#003366",
-            linewidth=1.5, alpha=0.6,
-        )
-        ax.add_patch(poly)
-
-        # Centreline
-        ax.plot([x1, x2], [y1, y2], "--", color="#003366", lw=0.8, alpha=0.6)
-
-        # Wall index label at midpoint
-        mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-        ax.text(mx, my, f"W{i + 1}", fontsize=9, color="#003366",
-                ha="center", va="center", weight="bold",
-                bbox=dict(boxstyle="round,pad=0.15", fc="white",
-                          ec="#003366", alpha=0.8))
-
-        # Verticals
-        pts_in, dia_in, pts_out, dia_out = _wall_bar_positions(
-            x1, y1, x2, y2, thk, cover,
-            v_dia_in, v_dia_out, v_spc_in, v_spc_out,
-            h_dia_in, h_dia_out, verts_outer_layer,
-        )
-        for pts, dias, label_color in [
-            (pts_in, dia_in, "red"),
-            (pts_out, dia_out, "darkred"),
-        ]:
-            for (bx, by), bd in zip(pts, dias):
-                ax.add_patch(Rectangle(
-                    (bx - bd / 2, by - bd / 2), bd, bd,
-                    facecolor=label_color, edgecolor="black",
-                    linewidth=0.5, alpha=0.85,
-                ))
-
-    ax.set_aspect("equal")
-    ax.grid(True, alpha=0.3)
-    ax.set_xlabel("x [mm]")
-    ax.set_ylabel("y [mm]")
-    ax.set_title("Live Section Preview")
-
-    if all_xy:
-        all_xy = np.vstack(all_xy)
-        x_min, y_min = all_xy.min(axis=0)
-        x_max, y_max = all_xy.max(axis=0)
-        pad = max(x_max - x_min, y_max - y_min) * 0.10 + 50
-        ax.set_xlim(x_min - pad, x_max + pad)
-        ax.set_ylim(y_min - pad, y_max + pad)
-
-    fig.tight_layout()
-    return fig
-
-
-# ---------------------------------------------------------------------------
-# Section builder
-# ---------------------------------------------------------------------------
-def build_section(walls_df: pd.DataFrame, mat: dict) -> CoreSection:
-    """Build a CoreSection from the walls dataframe and material dict.
-
-    CoreDesigner.CoreSection broadcasts per-wall, per-side arrays from the
-    inputs, so we assemble per-wall lists of [inner, outer] pairs.
-    """
-    walls_df = walls_df.dropna().reset_index(drop=True)
-    if len(walls_df) == 0:
-        raise ValueError("No walls defined.")
+    df = df.dropna(subset=GEOM_COLS).reset_index(drop=True)
+    if len(df) == 0:
+        raise ValueError("No valid walls defined. Each wall needs x1, y1, x2, y2 and thk.")
 
     wall_lines = []
     wall_thk = []
@@ -315,31 +197,63 @@ def build_section(walls_df: pd.DataFrame, mat: dict) -> CoreSection:
     h_spacing = []
     cover = []
 
-    for _, row in walls_df.iterrows():
-        p1 = Point(float(row.x1), float(row.y1))
-        p2 = Point(float(row.x2), float(row.y2))
-        if (p1 - p2).magnitude < 1e-6:
-            continue
-        wall_lines.append(Line(p1, p2))
-        wall_thk.append(float(row.thk))
-        v_dias.append([float(row.v_dia_in), float(row.v_dia_out)])
-        v_spacing.append([float(row.v_spc_in), float(row.v_spc_out)])
-        h_dias.append([float(row.h_dia_in), float(row.h_dia_out)])
-        h_spacing.append([float(row.h_spc_in), float(row.h_spc_out)])
-        cover.append([float(row.cover), float(row.cover)])
+    for i, row in df.iterrows():
+        x1, y1, x2, y2 = float(row["x1 (mm)"]), float(row["y1 (mm)"]), float(row["x2 (mm)"]), float(row["y2 (mm)"])
+        if np.hypot(x2 - x1, y2 - y1) < 1e-6:
+            raise ValueError(f"Wall {i+1}: zero-length wall (endpoints coincide).")
+        thk = float(row["thk (mm)"])
+        if thk <= 0:
+            raise ValueError(f"Wall {i+1}: thickness must be > 0.")
 
-    if not wall_lines:
-        raise ValueError("No valid walls (all had zero length?).")
+        wall_lines.append(Line([[x1, y1], [x2, y2]]))
+        wall_thk.append(thk)
 
-    return CoreSection(
-        f_ck=float(mat["f_ck"]),
+        v_dias.append([
+            _fill_with_default(row["v_dia_0 (mm)"], defaults["v_dia"]),
+            _fill_with_default(row["v_dia_1 (mm)"], defaults["v_dia"]),
+        ])
+        v_spacing.append([
+            _fill_with_default(row["v_s_0 (mm)"], defaults["v_s"]),
+            _fill_with_default(row["v_s_1 (mm)"], defaults["v_s"]),
+        ])
+        h_dias.append([
+            _fill_with_default(row["h_dia_0 (mm)"], defaults["h_dia"]),
+            _fill_with_default(row["h_dia_1 (mm)"], defaults["h_dia"]),
+        ])
+        h_spacing.append([
+            _fill_with_default(row["h_s_0 (mm)"], defaults["h_s"]),
+            _fill_with_default(row["h_s_1 (mm)"], defaults["h_s"]),
+        ])
+        cover.append([
+            _fill_with_default(row["cover_0 (mm)"], defaults["cover"]),
+            _fill_with_default(row["cover_1 (mm)"], defaults["cover"]),
+        ])
+
+    return dict(
         wall_lines=wall_lines,
         wall_thk=wall_thk,
-        v_dias=v_dias,
-        v_spacing=v_spacing,
-        h_dias=h_dias,
-        h_spacing=h_spacing,
-        cover=cover,
+        v_dias=np.array(v_dias, float),
+        v_spacing=np.array(v_spacing, float),
+        h_dias=np.array(h_dias, float),
+        h_spacing=np.array(h_spacing, float),
+        cover=np.array(cover, float),
+    )
+
+
+def build_core(walls: np.ndarray, mat: dict, defaults: dict) -> CoreSection:
+    """Build a CoreSection from the wall ndarray. The ndarray has shape
+    (N_walls, 15) and columns in WALL_COLS order."""
+    df = pd.DataFrame(walls, columns=WALL_COLS)
+    inputs = df_to_core_inputs(df, defaults)
+    return CoreSection(
+        f_ck=float(mat["f_ck"]),
+        wall_lines=inputs["wall_lines"],
+        wall_thk=inputs["wall_thk"],
+        v_dias=inputs["v_dias"],
+        v_spacing=inputs["v_spacing"],
+        h_dias=inputs["h_dias"],
+        h_spacing=inputs["h_spacing"],
+        cover=inputs["cover"],
         c_class=mat["c_class"],
         t_ref=float(mat["t_ref"]),
         k_E=float(mat["k_E"]),
@@ -351,53 +265,20 @@ def build_section(walls_df: pd.DataFrame, mat: dict) -> CoreSection:
 
 
 # ---------------------------------------------------------------------------
-# 90-degree clockwise rotation of wall endpoints
+# (No custom preview function — we use core.v_section.plot() directly,
+# which renders the actual merged wall geometry and rebar layout after
+# CoreSection has run its polygon-intersection repair. Building the
+# CoreSection is cheap; only M_Rd / I_u / M_cr etc. trigger FE work.)
 # ---------------------------------------------------------------------------
-def rotate_90_cw(walls_df: pd.DataFrame) -> pd.DataFrame:
-    """Rotate all wall endpoints 90 degrees clockwise about the bounding-box
-    centre of the wall endpoints, then translate so the bounding box minimum
-    sits at the origin. Wall properties (thk, cover, rebar) are unchanged.
+
+
+# ---------------------------------------------------------------------------
+# Section property summary
+# ---------------------------------------------------------------------------
+def core_summary(core: CoreSection, mat: dict, t_long: float, creep: float):
+    """List of (label, value) rows describing the core section. Mirrors the
+    RC beam summary but uses core.v_section as the underlying RCSection.
     """
-    df = walls_df.dropna().copy().reset_index(drop=True)
-    if len(df) == 0:
-        return walls_df.copy()
-
-    xs = np.concatenate([df.x1.to_numpy(float), df.x2.to_numpy(float)])
-    ys = np.concatenate([df.y1.to_numpy(float), df.y2.to_numpy(float)])
-    cx = 0.5 * (xs.min() + xs.max())
-    cy = 0.5 * (ys.min() + ys.max())
-
-    # 90 deg CW: (x, y) -> (cx + (y - cy), cy - (x - cx))
-    def rot(px, py):
-        return cx + (py - cy), cy - (px - cx)
-
-    new_x1, new_y1 = rot(df.x1.to_numpy(float), df.y1.to_numpy(float))
-    new_x2, new_y2 = rot(df.x2.to_numpy(float), df.y2.to_numpy(float))
-
-    all_x = np.concatenate([new_x1, new_x2])
-    all_y = np.concatenate([new_y1, new_y2])
-    x_min = all_x.min()
-    y_min = all_y.min()
-
-    df.x1 = new_x1 - x_min
-    df.y1 = new_y1 - y_min
-    df.x2 = new_x2 - x_min
-    df.y2 = new_y2 - y_min
-    return df
-
-
-# ---------------------------------------------------------------------------
-# Section property summary (used by the docx export and the in-page table)
-# ---------------------------------------------------------------------------
-def section_summary(core_sec: CoreSection, mat: dict,
-                     t_long: float, creep: float):
-    """Return a list of (label, value) tuples covering all key properties.
-
-    Properties are read from CoreSection.v_section (the wrapped RCSection).
-    Robust to None / NaN / inf coming out of the solver, since `ef` (via
-    math.log10) blows up on non-finite values.
-    """
-    sec = core_sec.v_section
 
     def _safe_ef(value, sig_figs=3):
         try:
@@ -423,6 +304,8 @@ def section_summary(core_sec: CoreSection, mat: dict,
         except Exception:
             return float("nan")
 
+    sec = core.v_section
+
     na = sec.elastic_na()
     x_c = sec.elastic_cracking_depth()
     I_u_st = sec.I_u()
@@ -432,28 +315,10 @@ def section_summary(core_sec: CoreSection, mat: dict,
     I_c_lt = sec.I_c(t=t_long, creep=creep)
     M_cr_lt = sec.M_cr(t=t_long, creep=creep)
 
-    # M_Rd (spline) with incl_x=True returns the y-coordinate of the ULS
-    # neutral axis as the third element, recovered from the paired x(F)
-    # spline built alongside M(F) in FM_graph. x_d = y_top - na_uls.
-    _x_d_err = None
     try:
         M_Rd, _F, na_uls = sec.M_Rd(F_target=0.0, return_F=True, incl_x=True)
-    except TypeError as e:
-        # incl_x kwarg not present - falls back to old signature and surfaces
-        # the issue so it's obvious what needs updating.
-        _x_d_err = (
-            f"M_Rd does not accept incl_x: {e}. RC_beam_mesh.py probably "
-            "wasn't updated with the FM_graph/M_Rd patch. Falling back to "
-            "the old signature (na_uls will be None)."
-        )
-        try:
-            M_Rd, _F, na_uls = sec.M_Rd(F_target=0.0, return_F=True)
-        except Exception as e2:
-            M_Rd, na_uls = float("nan"), None
-            _x_d_err = f"M_Rd failed: {e2}"
-    except Exception as e:
+    except Exception:
         M_Rd, na_uls = float("nan"), None
-        _x_d_err = f"M_Rd failed: {e}"
 
     if na_uls is None:
         x_d = float("nan")
@@ -467,10 +332,6 @@ def section_summary(core_sec: CoreSection, mat: dict,
     A_s = sec.A_s
     A_c = sec.A_c
     rho = (A_s / A_c * 100) if A_c > 0 else 0.0
-
-    mask_below = sec.rebar_centers[:, 1] < na
-    A_st = float(np.sum(sec.A_s_arr[mask_below])) if mask_below.any() else 0.0
-    rho_t = (A_st / A_c * 100) if A_c > 0 else 0.0
 
     M_Rd_kNm = _safe_div(M_Rd, 1e6)
     M_cr_st_kNm = _safe_div(M_cr_st, 1e6)
@@ -486,16 +347,13 @@ def section_summary(core_sec: CoreSection, mat: dict,
         ("Steel yield f_y", f"{_safe_ef(mat['f_y'])} MPa"),
         ("Partial factor gamma_c", f"{mat['gamma_c']:.2f}"),
         ("Partial factor gamma_s", f"{mat['gamma_s']:.2f}"),
-        ("Verticals outer layer",
-         "yes" if mat["verts_outer_layer"] else "no"),
+        ("Verticals as outer layer", "Yes" if mat["verts_outer_layer"] else "No"),
         ("Geometry", ""),
-        ("Number of walls", str(len(core_sec.wall_lines))),
+        ("Number of walls (input)", f"{core.N_walls if hasattr(core, 'N_walls') else len(core.wall_lines)}"),
         ("Bounding box B x H", f"{_safe_ef(sec.B)} x {_safe_ef(sec.H)} mm"),
         ("Concrete area A_c", f"{_safe_ef(A_c)} mm^2"),
         ("Steel area A_s", f"{_safe_ef(A_s)} mm^2"),
         ("Reinforcement ratio rho", f"{rho:.2f}%"),
-        ("Steel area below NA A_st", f"{_safe_ef(A_st)} mm^2"),
-        ("Tension ratio rho_t", f"{rho_t:.2f}%"),
         ("Effective depth d_ef", f"{_safe_ef(sec.d_ef)} mm"),
         ("Elastic (uncracked) properties", ""),
         ("Elastic NA y", f"{_safe_ef(na)} mm"),
@@ -520,8 +378,10 @@ def section_summary(core_sec: CoreSection, mat: dict,
 # DOCX export via CalcDoc
 # ---------------------------------------------------------------------------
 def build_calcdoc_bytes(
-    sec: CoreSection,
+    core: CoreSection,
+    walls_df: pd.DataFrame,
     mat: dict,
+    defaults: dict,
     t_long: float,
     creep: float,
     plot_fig: plt.Figure,
@@ -551,24 +411,58 @@ def build_calcdoc_bytes(
         template_path=template_path,
     )
 
-    cd.add_heading("Section Properties", level=1)
+    cd.add_heading("Core Section Properties", level=1)
 
-    cd.add_heading("Inputs", level=2)
-    rows = section_summary(sec, mat, t_long, creep)
+    # --- Wall table ---
+    cd.add_heading("Wall geometry and detailing", level=2)
+    cleaned = walls_df.dropna(subset=GEOM_COLS).reset_index(drop=True)
+    table = cd.add_table(rows=len(cleaned) + 1, cols=len(WALL_COLS) + 1)
+    header = ["Wall"] + WALL_COLS
+    for j, h in enumerate(header):
+        cell = table.rows[0].cells[j]
+        cell.text = h
+        for para in cell.paragraphs:
+            for run in para.runs:
+                run.bold = True
+    for i, row in cleaned.iterrows():
+        cells = table.rows[i + 1].cells
+        cells[0].text = f"W{i + 1}"
+        for j, col in enumerate(WALL_COLS):
+            v = row[col]
+            if v is None or (isinstance(v, float) and not np.isfinite(v)):
+                cells[j + 1].text = "default"
+            else:
+                cells[j + 1].text = f"{float(v):g}"
 
-    # Render the summary as a 2-column table.
+    # --- Per-face defaults ---
+    cd.add_heading("Detailing defaults (used when re-seeding the wall table)", level=2)
+    drows = [
+        ("Vertical bar diameter v_dia", f"{defaults['v_dia']} mm"),
+        ("Vertical bar spacing v_s", f"{defaults['v_s']} mm"),
+        ("Horizontal bar diameter h_dia", f"{defaults['h_dia']} mm"),
+        ("Horizontal bar spacing h_s", f"{defaults['h_s']} mm"),
+        ("Cover", f"{defaults['cover']} mm"),
+    ]
+    dtable = cd.add_table(rows=len(drows), cols=2)
+    for i, (k, v) in enumerate(drows):
+        dtable.rows[i].cells[0].text = k
+        dtable.rows[i].cells[1].text = str(v)
+
+    # --- Property summary ---
+    cd.add_heading("Section property summary", level=2)
+    rows = core_summary(core, mat, t_long, creep)
     table = cd.add_table(rows=len(rows), cols=2)
     for i, (k, v) in enumerate(rows):
         cells = table.rows[i].cells
         cells[0].text = k
         cells[1].text = str(v)
-        # Make section headers bold (rows where value is empty).
         if v == "":
             for cell in cells:
                 for para in cell.paragraphs:
                     for run in para.runs:
                         run.bold = True
 
+    # --- Plots ---
     cd.add_heading("Section Plot", level=2)
     buf_plot = io.BytesIO()
     plot_fig.savefig(buf_plot, format="png", dpi=180, bbox_inches="tight",
@@ -590,14 +484,14 @@ def build_calcdoc_bytes(
 
 
 # ===========================================================================
-# Sidebar - Material properties and analysis settings
+# Sidebar - Material properties, detailing defaults, analysis settings
 # ===========================================================================
 with st.sidebar:
     st.header("Material Properties")
 
     f_ck = st.number_input(
         "Concrete f_ck_28 [MPa]", min_value=12.0, max_value=120.0,
-        value=35.0, step=1.0,
+        value=40.0, step=1.0,
     )
     c_class = st.selectbox(
         "Cement class", ["CR", "CN", "CS"], index=1,
@@ -635,25 +529,61 @@ with st.sidebar:
                                 value=2.2, step=0.1)
     t_long = t_long_yrs * 365.0
 
-    st.markdown("**Reinforcement layout**")
+    st.divider()
+    st.header("Plot Options")
+    col1, col2 = st.columns(2)
+    with col1:
+        plot_incl_uls = st.checkbox("ULS strains", value=True,
+                                   help="Show ULS strain diagram and neutral axis.")
+        plot_incl_stiffness = st.checkbox("Stiffness", value=True,
+                                        help="Show short/long-term stiffness annotations.")
+    with col2:
+        plot_incl_dims = st.checkbox("Dimensions", value=False,
+                                    help="Show section dimensions.")
+
+    st.divider()
+    st.header("Detailing")
     verts_outer_layer = st.checkbox(
         "Verticals as outer layer", value=False,
-        help="If checked, vertical bars sit outside the horizontals "
-             "(cover offset = cover + v_dia/2). Otherwise verticals sit "
-             "inside the horizontals (cover offset = cover + v_dia/2 + h_dia).",
+        help=(
+            "If checked, vertical bars sit on the outside (cover + dia/2) and "
+            "horizontals sit inboard. If unchecked, horizontals are on the "
+            "outside and verticals sit one bar-diameter deeper. "
+            "Maps to CoreSection(verts_outer_layer=...)."
+        ),
     )
+
+    st.markdown("**Per-face defaults** (used where wall row is blank)")
+    col1, col2 = st.columns(2)
+    with col1:
+        v_dia_def = st.number_input("v_dia [mm]", min_value=6.0, max_value=50.0,
+                                    value=16.0, step=1.0)
+        h_dia_def = st.number_input("h_dia [mm]", min_value=6.0, max_value=50.0,
+                                    value=12.0, step=1.0)
+    with col2:
+        v_s_def = st.number_input("v_s [mm]", min_value=50.0, max_value=600.0,
+                                  value=200.0, step=10.0)
+        h_s_def = st.number_input("h_s [mm]", min_value=50.0, max_value=600.0,
+                                  value=200.0, step=10.0)
+    cover_def = st.number_input("cover [mm]", min_value=10.0, max_value=100.0,
+                                value=30.0, step=5.0)
 
     mat = dict(
         f_ck=f_ck, c_class=c_class, t_ref=t_ref, k_E=k_E, f_y=f_y,
         gamma_c=gamma_c, gamma_s=gamma_s,
         verts_outer_layer=verts_outer_layer,
     )
+    defaults = dict(
+        v_dia=v_dia_def, v_s=v_s_def,
+        h_dia=h_dia_def, h_s=h_s_def,
+        cover=cover_def,
+    )
 
     st.divider()
     st.header("DOCX Export Settings")
     project_name = st.text_input("Project name", value="Project")
     project_number = st.text_input("Project number", value="0000")
-    design_element = st.text_input("Design element", value="RC Core Section")
+    design_element = st.text_input("Design element", value="RC Core")
     calc_title = st.text_input("Calc title", value="Core Section Properties")
     calc_by = st.text_input("Calc by", value="GGS")
     checked_by = st.text_input("Checked by", value="")
@@ -668,100 +598,99 @@ with st.sidebar:
 # ===========================================================================
 # Main area
 # ===========================================================================
-st.title("RC Core Section Analysis")
+st.title("Reinforced Concrete Core Section Analysis")
 st.caption(
-    "Edit the walls table (one row per wall, all rebar dia/spacing per face), "
-    "then run analysis. Both plot() and plot_FM_graph() will be produced."
+    "Define the core's wall centre-lines in the table below. Every cell "
+    "is pre-populated from the sidebar detailing defaults; edit any cell "
+    "to override per wall or per face. Face 0 is on the +n (left-hand) "
+    "side of the wall direction (x1,y1) to (x2,y2), marked red in the "
+    "preview. Edits are not committed live: click **Refresh preview** to "
+    "redraw, or **Run Analysis** to solve."
 )
 
 col_inputs, col_preview = st.columns([1.4, 1.0])
 
 with col_inputs:
-    st.markdown(
-        "**Walls table.** Each row defines a wall by centreline endpoints "
-        "(x1,y1) to (x2,y2), thickness, cover, and per-face vertical and "
-        "horizontal rebar (in = side 0, out = side 1). Add or delete rows "
-        "directly in the table."
-    )
+    st.markdown("**Wall centre-lines and per-wall detailing**")
 
-    edited_walls = st.data_editor(
-        st.session_state.walls,
+    # Build a FRESH DataFrame each rerun from the ndarray in state. This
+    # is the same pattern the working RC_beam_SL.py uses. Do NOT pass
+    # st.session_state.walls directly into data_editor and write back to
+    # the same slot: that creates a reactive identity loop.
+    walls_df = pd.DataFrame(st.session_state.walls, columns=WALL_COLS)
+    edited = st.data_editor(
+        walls_df,
         num_rows="dynamic",
         use_container_width=True,
         key="walls_editor",
-        height=320,
+        height=380,
         column_config={
-            "x1": st.column_config.NumberColumn("x1", format="%.1f", help="Start x [mm]"),
-            "y1": st.column_config.NumberColumn("y1", format="%.1f", help="Start y [mm]"),
-            "x2": st.column_config.NumberColumn("x2", format="%.1f", help="End x [mm]"),
-            "y2": st.column_config.NumberColumn("y2", format="%.1f", help="End y [mm]"),
-            "thk": st.column_config.NumberColumn("thk", format="%.0f", help="Wall thickness [mm]"),
-            "cover": st.column_config.NumberColumn("cover", format="%.0f", help="Cover to outermost steel [mm]"),
-            "v_dia_in": st.column_config.NumberColumn("v\u00f8 in", format="%.0f", help="Vertical bar dia, inner face [mm]"),
-            "v_dia_out": st.column_config.NumberColumn("v\u00f8 out", format="%.0f", help="Vertical bar dia, outer face [mm]"),
-            "v_spc_in": st.column_config.NumberColumn("v sp in", format="%.0f", help="Vertical bar spacing, inner face [mm]"),
-            "v_spc_out": st.column_config.NumberColumn("v sp out", format="%.0f", help="Vertical bar spacing, outer face [mm]"),
-            "h_dia_in": st.column_config.NumberColumn("h\u00f8 in", format="%.0f", help="Horizontal bar dia, inner face [mm]"),
-            "h_dia_out": st.column_config.NumberColumn("h\u00f8 out", format="%.0f", help="Horizontal bar dia, outer face [mm]"),
-            "h_spc_in": st.column_config.NumberColumn("h sp in", format="%.0f", help="Horizontal bar spacing, inner face [mm]"),
-            "h_spc_out": st.column_config.NumberColumn("h sp out", format="%.0f", help="Horizontal bar spacing, outer face [mm]"),
+            c: st.column_config.NumberColumn(format="%.1f")
+            for c in WALL_COLS
         },
     )
 
+    # Commit: convert back to ndarray. The type round-trip
+    # (ndarray -> DataFrame -> editor -> DataFrame -> ndarray) is what
+    # breaks the reactive loop.
+    try:
+        cleaned = edited.dropna(how="all")
+        if len(cleaned) > 0:
+            st.session_state.walls = cleaned.to_numpy(dtype=float)
+        else:
+            st.session_state.walls = np.empty((0, len(WALL_COLS)), float)
+    except Exception:
+        # Don't blow up on a transient mid-edit state; keep the previous
+        # ndarray and let the user finish typing.
+        pass
+
     c1, c2, c3 = st.columns(3)
     with c1:
-        if st.button("Reset C-core", use_container_width=True):
-            st.session_state.walls = _default_walls()
+        if st.button("Reset C-shape", use_container_width=True,
+                     help="Re-seed the table with the default 3 m C-shape "
+                          "using current sidebar detailing defaults."):
+            st.session_state.walls = _default_walls(defaults)
             st.rerun()
     with c2:
-        if st.button("Clear all walls", use_container_width=True):
-            st.session_state.walls = pd.DataFrame(columns=WALL_COLS, dtype=float)
+        if st.button("Add blank row", use_container_width=True,
+                     help="Append a new wall row, pre-filled with current "
+                          "sidebar detailing defaults and zero geometry."):
+            new_row = np.array(
+                [_wall_row_from_defaults(0.0, 0.0, 0.0, 0.0, 200.0, defaults)],
+                dtype=float,
+            )
+            st.session_state.walls = np.vstack([st.session_state.walls, new_row])
             st.rerun()
     with c3:
-        if st.button("Mirror inner -> outer", use_container_width=True,
-                     help="Copy inner-face dia/spacing values to the outer "
-                          "face for every wall."):
-            df = edited_walls.copy()
-            df["v_dia_out"] = df["v_dia_in"]
-            df["v_spc_out"] = df["v_spc_in"]
-            df["h_dia_out"] = df["h_dia_in"]
-            df["h_spc_out"] = df["h_spc_in"]
-            st.session_state.walls = df
+        if st.button("Clear all walls", use_container_width=True):
+            st.session_state.walls = np.empty((0, len(WALL_COLS)), float)
             st.rerun()
-
-    # Commit edits
-    try:
-        cleaned = edited_walls.dropna()
-        if len(cleaned) >= 1:
-            st.session_state.walls = cleaned.reset_index(drop=True).astype(float)
-            st.success(f"\u2713 {len(cleaned)} walls")
-        else:
-            st.session_state.walls = pd.DataFrame(columns=WALL_COLS, dtype=float)
-            st.warning("No walls defined.")
-    except Exception as ex:
-        st.warning(f"Walls parse issue: {ex}")
 
 with col_preview:
-    st.markdown("**Live Preview**")
-    try:
-        prev_fig = plot_section_preview(
-            st.session_state.walls, verts_outer_layer,
-        )
-        st.pyplot(prev_fig, use_container_width=True)
-        plt.close(prev_fig)
-    except Exception as ex:
-        st.error(f"Preview error: {ex}")
-
-    if st.button("\u21bb Rotate 90\u00b0 CW", use_container_width=True,
-                 help="Rotate all wall endpoints 90 degrees clockwise about "
-                      "the section bounding-box centre, then translate to "
-                      "keep the section in the positive quadrant. Wall "
-                      "thicknesses, covers, and rebar are unchanged."):
+    st.markdown("**Section Preview**")
+    if st.button("\u21bb Refresh preview", use_container_width=True,
+                 help="Build the CoreSection and render its geometry "
+                      "(merged walls + rebar). No analysis is run."):
         try:
-            st.session_state.walls = rotate_90_cw(st.session_state.walls)
-            st.rerun()
+            if st.session_state.preview_fig is not None:
+                plt.close(st.session_state.preview_fig)
+            core = build_core(st.session_state.walls, mat, defaults)
+            # Geometry-only plot: no ULS, no stiffness, no dims. This avoids
+            # any FE work and matches the behaviour of the existing tools.
+            st.session_state.preview_fig = core.v_section.plot(
+                show=False,
+                incl_uls=False,
+                incl_stiffness=False,
+                incl_dims=False,
+            )
         except Exception as ex:
-            st.error(f"Rotate failed: {ex}")
+            st.session_state.preview_fig = None
+            st.error(f"Preview error: {ex}")
+
+    if st.session_state.preview_fig is not None:
+        st.pyplot(st.session_state.preview_fig, use_container_width=True)
+    else:
+        st.caption("Click **Refresh preview** to draw the current section.")
 
 st.divider()
 
@@ -773,38 +702,33 @@ with run_col:
     run_btn = st.button("Run Analysis", type="primary", use_container_width=True)
 with export_col:
     export_btn = st.button("Export to DOCX", use_container_width=True,
-                           disabled=(st.session_state.section is None))
+                           disabled=(st.session_state.core is None))
 
 if run_btn:
     with st.spinner("Building core section and solving..."):
         try:
-            core_sec = build_section(st.session_state.walls, mat)
-            sec_v = core_sec.v_section  # underlying RCSection
+            core = build_core(st.session_state.walls, mat, defaults)
 
-            # All options on except incl_dims, per spec.
-            plot_fig = sec_v.plot(
+            plot_fig = core.v_section.plot(
                 show=False,
-                incl_uls=True,
-                incl_stiffness=True,
-                incl_dims=False,
+                incl_uls=plot_incl_uls,
+                incl_stiffness=plot_incl_stiffness,
+                incl_dims=plot_incl_dims,
                 creep=creep,
                 t=t_long,
             )
 
-            # plot_FM_graph creates its own figure internally
             fm_fig, fm_ax = plt.subplots(figsize=(10, 7))
-            sec_v.plot_FM_graph(ax=fm_ax, show=False)
+            core.v_section.plot_FM_graph(ax=fm_ax, show=False)
             fm_fig.tight_layout()
 
-            st.session_state.section = core_sec
+            st.session_state.core = core
             st.session_state.plot_fig = plot_fig
             st.session_state.fm_fig = fm_fig
-            st.session_state.summary_rows = section_summary(
-                core_sec, mat, t_long, creep
-            )
+            st.session_state.summary_rows = core_summary(core, mat, t_long, creep)
             st.success("Analysis complete.")
         except Exception as ex:
-            st.session_state.section = None
+            st.session_state.core = None
             st.session_state.plot_fig = None
             st.session_state.fm_fig = None
             st.session_state.summary_rows = None
@@ -831,14 +755,16 @@ if st.session_state.plot_fig is not None and st.session_state.fm_fig is not None
 
 # Handle export
 if export_btn:
-    if st.session_state.section is None:
+    if st.session_state.core is None:
         st.error("Run analysis first.")
     else:
         try:
             with st.spinner("Building DOCX..."):
                 docx_bytes = build_calcdoc_bytes(
-                    sec=st.session_state.section,
+                    core=st.session_state.core,
+                    walls_df=pd.DataFrame(st.session_state.walls, columns=WALL_COLS),
                     mat=mat,
+                    defaults=defaults,
                     t_long=t_long,
                     creep=creep,
                     plot_fig=st.session_state.plot_fig,

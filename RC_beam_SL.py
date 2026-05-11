@@ -465,6 +465,18 @@ with st.sidebar:
                                 value=2.2, step=0.1)
     t_long = t_long_yrs * 365.0
 
+    st.divider()
+    st.header("Plot Options")
+    col1, col2 = st.columns(2)
+    with col1:
+        plot_incl_uls = st.checkbox("ULS strains", value=True,
+                                   help="Show ULS strain diagram and neutral axis.")
+        plot_incl_stiffness = st.checkbox("Stiffness", value=True,
+                                        help="Show short/long-term stiffness annotations.")
+    with col2:
+        plot_incl_dims = st.checkbox("Dimensions", value=False,
+                                    help="Show section dimensions.")
+
     with st.expander("Advanced"):
         as_square = st.checkbox(
             "Model rebar as square", value=False,
@@ -644,9 +656,9 @@ if run_btn:
             # All options on except incl_dims, per spec.
             plot_fig = sec.plot(
                 show=False,
-                incl_uls=True,
-                incl_stiffness=True,
-                incl_dims=False,
+                incl_uls=plot_incl_uls,
+                incl_stiffness=plot_incl_stiffness,
+                incl_dims=plot_incl_dims,
                 creep=creep,
                 t=t_long,
             )
