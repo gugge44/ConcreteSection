@@ -1349,8 +1349,9 @@ with st.sidebar:
 # ===========================================================================
 st.title("Reinforced Concrete Section Analysis")
 st.caption(
-    "Edit the section vertices and rebar tables, then run analysis. "
-    "Both plot() and plot_FM_graph() will be produced."
+    "Edit the section vertices and rebar tables, then click 'Apply vertex "
+    "edits' / 'Apply rebar edits' to commit. The preview only refreshes on "
+    "commit, so you can type freely without the page jumping."
 )
 
 col_inputs, col_preview = st.columns([1.1, 1.0])
@@ -1360,24 +1361,53 @@ with col_inputs:
 
     with tab_vertices:
         st.markdown(
-            "**Concrete section outline** (min 3 vertices, ordered around the perimeter)."
-        )
-        vert_df = pd.DataFrame(st.session_state.vertices, columns=["x (mm)", "y (mm)"])
-        edited_vert = st.data_editor(
-            vert_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            key="vertices_editor",
-            height=300,
-            column_config={
-                "x (mm)": st.column_config.NumberColumn(format="%.2f"),
-                "y (mm)": st.column_config.NumberColumn(format="%.2f"),
-            },
+            "**Concrete section outline** (min 3 vertices, ordered around the "
+            "perimeter)."
         )
 
+        # The data_editor lives inside an st.form so cell edits are batched
+        # locally and do not trigger a rerun until the submit button is
+        # clicked. This is the official Streamlit pattern for "stop the page
+        # jumping while I type" (st.form docs and discuss thread 42886).
+        with st.form("vertices_form", clear_on_submit=False):
+            vert_df = pd.DataFrame(
+                st.session_state.vertices, columns=["x (mm)", "y (mm)"]
+            )
+            edited_vert = st.data_editor(
+                vert_df,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="vertices_editor",
+                height=300,
+                column_config={
+                    "x (mm)": st.column_config.NumberColumn(format="%.2f"),
+                    "y (mm)": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
+            vert_submitted = st.form_submit_button(
+                "Apply vertex edits", type="primary",
+                use_container_width=True,
+            )
+
+        if vert_submitted:
+            try:
+                cleaned = edited_vert.dropna()
+                if len(cleaned) >= 3:
+                    st.session_state.vertices = cleaned.to_numpy(dtype=float)
+                    st.success(f"\u2713 {len(cleaned)} vertices applied.")
+                else:
+                    st.error("Need at least 3 vertices. Edits not applied.")
+            except Exception as ex:
+                st.warning(f"Vertex parse issue: {ex}")
+
+        # Geometry mutation buttons live OUTSIDE the form (st.button is not
+        # allowed inside a form). They overwrite st.session_state.vertices
+        # directly and rerun, which redraws the editor from the new state.
+        st.markdown("---")
         c1, c2, c3 = st.columns(3)
         with c1:
-            if st.button("Reset rectangle", use_container_width=True):
+            if st.button("Reset rectangle", use_container_width=True,
+                         key="btn_reset_rect"):
                 st.session_state.vertices = _default_vertices()
                 st.rerun()
         with c2:
@@ -1386,65 +1416,69 @@ with col_inputs:
         with c3:
             H_new = st.number_input("H [mm]", 50.0, 5000.0, 600.0, 50.0,
                                     key="quick_H", label_visibility="collapsed")
-        if st.button("Build BxH rectangle from above", use_container_width=True):
+        if st.button("Build BxH rectangle from above",
+                     use_container_width=True, key="btn_build_bh"):
             st.session_state.vertices = np.array(
                 [[0, 0], [B_new, 0], [B_new, H_new], [0, H_new]], float
             )
             st.rerun()
 
-        # Validate and commit the edit
-        try:
-            cleaned = edited_vert.dropna()
-            if len(cleaned) >= 3:
-                st.session_state.vertices = cleaned.to_numpy(dtype=float)
-                st.success(f"\u2713 {len(cleaned)} vertices")
-            else:
-                st.error("Need at least 3 vertices.")
-        except Exception as ex:
-            st.warning(f"Vertex parse issue: {ex}")
-
     with tab_rebar:
         st.markdown("**Rebar positions** (x, y in mm, diameter in mm).")
-        rebar_df = pd.DataFrame(
-            st.session_state.rebar,
-            columns=["x (mm)", "y (mm)", "diameter (mm)"],
-        )
-        edited_rebar = st.data_editor(
-            rebar_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            key="rebar_editor",
-            height=300,
-            column_config={
-                "x (mm)": st.column_config.NumberColumn(format="%.2f"),
-                "y (mm)": st.column_config.NumberColumn(format="%.2f"),
-                "diameter (mm)": st.column_config.NumberColumn(format="%.1f"),
-            },
-        )
 
+        with st.form("rebar_form", clear_on_submit=False):
+            rebar_df = pd.DataFrame(
+                st.session_state.rebar,
+                columns=["x (mm)", "y (mm)", "diameter (mm)"],
+            )
+            edited_rebar = st.data_editor(
+                rebar_df,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="rebar_editor",
+                height=300,
+                column_config={
+                    "x (mm)": st.column_config.NumberColumn(format="%.2f"),
+                    "y (mm)": st.column_config.NumberColumn(format="%.2f"),
+                    "diameter (mm)": st.column_config.NumberColumn(format="%.1f"),
+                },
+            )
+            rebar_submitted = st.form_submit_button(
+                "Apply rebar edits", type="primary",
+                use_container_width=True,
+            )
+
+        if rebar_submitted:
+            try:
+                cleaned = edited_rebar.dropna()
+                if len(cleaned) >= 1:
+                    st.session_state.rebar = cleaned.to_numpy(dtype=float)
+                    st.success(f"\u2713 {len(cleaned)} bars applied.")
+                else:
+                    st.session_state.rebar = np.empty((0, 3), float)
+                    st.warning("No rebar defined.")
+            except Exception as ex:
+                st.warning(f"Rebar parse issue: {ex}")
+
+        st.markdown("---")
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("Clear all rebar", use_container_width=True):
+            if st.button("Clear all rebar", use_container_width=True,
+                         key="btn_clear_rebar"):
                 st.session_state.rebar = np.empty((0, 3), float)
                 st.rerun()
         with c2:
-            if st.button("Default 3T25 bottom", use_container_width=True):
+            if st.button("Default 3T25 bottom", use_container_width=True,
+                         key="btn_default_rebar"):
                 st.session_state.rebar = _default_rebar()
                 st.rerun()
 
-        try:
-            cleaned = edited_rebar.dropna()
-            if len(cleaned) >= 1:
-                st.session_state.rebar = cleaned.to_numpy(dtype=float)
-                st.success(f"\u2713 {len(cleaned)} bars")
-            else:
-                st.session_state.rebar = np.empty((0, 3), float)
-                st.warning("No rebar defined.")
-        except Exception as ex:
-            st.warning(f"Rebar parse issue: {ex}")
-
 with col_preview:
-    st.markdown("**Live Preview**")
+    st.markdown("**Section Preview**")
+    st.caption(
+        "Reflects the committed state. Click 'Apply ... edits' to update "
+        "after editing the tables."
+    )
     try:
         prev_fig = plot_section_preview(
             st.session_state.vertices, st.session_state.rebar
@@ -1455,6 +1489,7 @@ with col_preview:
         st.error(f"Preview error: {ex}")
 
     if st.button("\u21bb Rotate 90\u00b0 CW", use_container_width=True,
+                 key="btn_rotate_cw",
                  help="Rotate vertices and rebar 90 degrees clockwise about "
                       "the section centroid, then translate to keep the "
                       "section in the positive quadrant."):
