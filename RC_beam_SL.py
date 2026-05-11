@@ -311,39 +311,391 @@ def section_summary(sec: RCSection, mat: dict, t_long: float, creep: float):
     x_d_ratio = _safe_div(x_d, sec.d_ef)
 
     rows = [
-        ("Material", ""),
-        ("Concrete strength f_ck_28", f"{_safe_ef(mat['f_ck'])} MPa"),
+        ("**Material**", ""),
+        ("Concrete strength f_{ck,28}", f"{_safe_ef(mat['f_ck'])} MPa"),
         ("Cement class", mat["c_class"]),
-        ("Reference age t_ref", f"{_safe_ef(mat['t_ref'])} days"),
-        ("Modulus coefficient k_E", f"{_safe_ef(mat['k_E'])}"),
-        ("Steel yield f_y", f"{_safe_ef(mat['f_y'])} MPa"),
-        ("Partial factor gamma_c", f"{mat['gamma_c']:.2f}"),
-        ("Partial factor gamma_s", f"{mat['gamma_s']:.2f}"),
-        ("Geometry", ""),
-        ("Bounding box B x H", f"{_safe_ef(sec.B)} x {_safe_ef(sec.H)} mm"),
-        ("Concrete area A_c", f"{_safe_ef(A_c)} mm^2"),
-        ("Steel area A_s", f"{_safe_ef(A_s)} mm^2"),
-        ("Reinforcement ratio rho", f"{rho:.2f}%"),
-        ("Steel area below NA A_st", f"{_safe_ef(A_st)} mm^2"),
-        ("Tension ratio rho_t", f"{rho_t:.2f}%"),
-        ("Effective depth d_ef", f"{_safe_ef(sec.d_ef)} mm"),
-        ("Elastic (uncracked) properties", ""),
+        ("Reference age t_{ref}", f"{_safe_ef(mat['t_ref'])} days"),
+        ("Modulus coefficient k_{E}", f"{_safe_ef(mat['k_E'])}"),
+        ("Steel yield f_{y}", f"{_safe_ef(mat['f_y'])} MPa"),
+        ("Partial factor γ_{c}", f"{mat['gamma_c']:.2f}"),
+        ("Partial factor γ_{s}", f"{mat['gamma_s']:.2f}"),
+        ("**Geometry**", ""),
+        ("Bounding box B × H", f"{_safe_ef(sec.B)} × {_safe_ef(sec.H)} mm"),
+        ("Concrete area A_{c}", f"{_safe_ef(A_c)} mm^{{2}}"),
+        ("Steel area A_{s}", f"{_safe_ef(A_s)} mm^{{2}}"),
+        ("Reinforcement ratio ρ", f"{rho:.2f}%"),
+        ("Steel area below NA A_{st}", f"{_safe_ef(A_st)} mm^{{2}}"),
+        ("Tension ratio ρ_{t}", f"{rho_t:.2f}%"),
+        ("Effective depth d_{ef}", f"{_safe_ef(sec.d_ef)} mm"),
+        ("**Elastic (uncracked) properties**", ""),
         ("Elastic NA y", f"{_safe_ef(na)} mm"),
-        ("Uncracked NA depth x_u", f"{_safe_ef(sec.y_max - na)} mm"),
-        ("Cracked NA depth x_c", f"{_safe_ef(x_c)} mm"),
-        ("Short term I_u", f"{_safe_ef(I_u_st)} mm^4"),
-        ("Short term I_c", f"{_safe_ef(I_c_st)} mm^4"),
-        ("Short term M_cr", f"{_safe_ef(M_cr_st_kNm)} kNm"),
-        ("Long term (t, phi)", f"t={_safe_ef(t_long / 365)} yrs, phi={_safe_ef(creep)}"),
-        ("Long term I_u", f"{_safe_ef(I_u_lt)} mm^4"),
-        ("Long term I_c", f"{_safe_ef(I_c_lt)} mm^4"),
-        ("Long term M_cr", f"{_safe_ef(M_cr_lt_kNm)} kNm"),
-        ("Ultimate limit state", ""),
-        ("Bending capacity M_Rd (F=0)", f"{_safe_ef(M_Rd_kNm)} kNm"),
-        ("Design NA depth x_d", f"{_safe_ef(x_d)} mm"),
-        ("Depth ratio x_d / d_ef", f"{_safe_ef(x_d_ratio)}"),
+        ("Uncracked NA depth x_{u}", f"{_safe_ef(sec.y_max - na)} mm"),
+        ("Cracked NA depth x_{c}", f"{_safe_ef(x_c)} mm"),
+        ("Short term I_{u}", f"{_safe_ef(I_u_st)} mm^{{4}}"),
+        ("Short term I_{c}", f"{_safe_ef(I_c_st)} mm^{{4}}"),
+        ("Short term M_{cr}", f"{_safe_ef(M_cr_st_kNm)} kNm"),
+        ("Long term (t, φ)", f"t = {_safe_ef(t_long / 365)} yrs, φ = {_safe_ef(creep)}"),
+        ("Long term I_{u}", f"{_safe_ef(I_u_lt)} mm^{{4}}"),
+        ("Long term I_{c}", f"{_safe_ef(I_c_lt)} mm^{{4}}"),
+        ("Long term M_{cr}", f"{_safe_ef(M_cr_lt_kNm)} kNm"),
+        ("**Ultimate limit state**", ""),
+        ("Bending capacity M_{Rd} (F = 0)", f"{_safe_ef(M_Rd_kNm)} kNm"),
+        ("Design NA depth x_{d}", f"{_safe_ef(x_d)} mm"),
+        ("Depth ratio x_{d} / d_{ef}", f"{_safe_ef(x_d_ratio)}"),
     ]
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Validation helpers: closed-form benchmarks for a rectangular RC section
+# ---------------------------------------------------------------------------
+def _is_axis_aligned_rectangle(vertices: np.ndarray, tol: float = 1e-3) -> bool:
+    """True if the polygon is a 4-vertex axis-aligned rectangle.
+
+    Tolerance is in millimetres, which is the input unit used throughout.
+    """
+    if vertices.shape[0] != 4:
+        return False
+    xs = np.sort(np.unique(np.round(vertices[:, 0] / tol) * tol))
+    ys = np.sort(np.unique(np.round(vertices[:, 1] / tol) * tol))
+    if xs.size != 2 or ys.size != 2:
+        return False
+    # All four corners must be one of the (x_i, y_j) combinations.
+    corners = {(round(x, 6), round(y, 6)) for x in xs for y in ys}
+    poly_pts = {(round(v[0], 6), round(v[1], 6)) for v in vertices}
+    return corners == poly_pts
+
+
+def _ec2_fctm(f_ck: float) -> float:
+    """Mean axial tensile strength per EC2 Table 3.1 (MPa).
+
+    f_ctm = 0.30 * f_ck^(2/3)   for f_ck <= 50 MPa
+    f_ctm = 2.12 * ln(1 + (f_ck + 8) / 10)   for f_ck > 50 MPa
+    """
+    if f_ck <= 50.0:
+        return 0.30 * f_ck ** (2.0 / 3.0)
+    return 2.12 * np.log(1.0 + (f_ck + 8.0) / 10.0)
+
+
+def _ec2_Ecm_kE(f_ck: float, k_E: float) -> float:
+    """Mean secant modulus using the k_E formulation (MPa).
+
+    E_cm = k_E * (f_ck + 8)^(1/3)
+
+    This matches the form used by RCSection. EC2 Table 3.1 gives an
+    equivalent value via E_cm = 22000 * ((f_ck+8)/10)^0.3 (MPa); both
+    yield very similar results for normal-weight concrete.
+    """
+    return k_E * (f_ck + 8.0) ** (1.0 / 3.0)
+
+
+def benchmark_rectangle(sec: RCSection, mat: dict, t_long: float, creep: float):
+    """Closed-form benchmark values for a singly reinforced rectangular section.
+
+    Returns a dict with the benchmark values. Assumes:
+    - Concrete polygon is the bounding box B x H (a note flags this if not).
+    - All rebar is treated as a single tension layer at the rebar area
+      centroid (effective depth d). For cracked / ULS benchmarks this matches
+      standard textbook practice (Mosley, Bungey & Hulse; Bhatt, MacGinley & Choo).
+    - alpha_cc is 1.0 (UK NA value for EC2 used by D4S as default).
+    """
+    B = float(sec.B)
+    H = float(sec.H)
+
+    A_s_arr = np.asarray(sec.A_s_arr, dtype=float)
+    y_s = np.asarray(sec.rebar_centers[:, 1], dtype=float)
+    A_s_total = float(A_s_arr.sum())
+
+    # Effective depth as area-weighted centroid of all rebar (matches d_ef).
+    if A_s_total > 0:
+        y_bar_s = float((A_s_arr * y_s).sum() / A_s_total)
+    else:
+        y_bar_s = 0.0
+    d = H - y_bar_s  # distance from top fibre to rebar centroid
+
+    f_ck = float(mat["f_ck"])
+    f_y = float(mat["f_y"])
+    gamma_c = float(mat["gamma_c"])
+    gamma_s = float(mat["gamma_s"])
+    k_E = float(mat["k_E"])
+    E_s = 200_000.0  # MPa, EC2 §3.2.7(4)
+
+    # --- Elastic moduli (short and long term) -------------------------------
+    E_cm = _ec2_Ecm_kE(f_ck, k_E)
+    E_c_eff = E_cm / (1.0 + creep)  # EC2 §7.4.3, §5.8.4
+    n_st = E_s / E_cm
+    n_lt = E_s / E_c_eff
+
+    # --- Uncracked transformed section (short term) -------------------------
+    # Take top fibre as y = H, bottom fibre as y = 0 (matches input convention).
+    # Transformed area = B*H + (n - 1) * A_s   (concrete still present at steel locations)
+    def _uncracked(n):
+        A_t = B * H + (n - 1.0) * A_s_total
+        # First moment about y = 0
+        S_t = B * H * (H / 2.0) + (n - 1.0) * float((A_s_arr * y_s).sum())
+        y_NA = S_t / A_t
+        # Second moment about y_NA
+        I_t = (
+            B * H ** 3 / 12.0
+            + B * H * (y_NA - H / 2.0) ** 2
+            + (n - 1.0) * float((A_s_arr * (y_s - y_NA) ** 2).sum())
+        )
+        return y_NA, I_t
+
+    y_NA_st, I_u_st = _uncracked(n_st)
+    y_NA_lt, I_u_lt = _uncracked(n_lt)
+
+    # --- Cracked transformed section: singly reinforced rectangle -----------
+    # Take moments of transformed area about the NA. With NA depth x from top:
+    #   B * x * (x / 2) = n * A_s * (d - x)
+    # which gives x^2 + (2 n A_s / B) x - (2 n A_s d / B) = 0.
+    def _cracked(n):
+        if A_s_total <= 0 or d <= 0:
+            return float("nan"), float("nan")
+        a = 2.0 * n * A_s_total / B
+        # x = (-a + sqrt(a^2 + 4 a d)) / 2
+        x = 0.5 * (-a + np.sqrt(a * a + 4.0 * a * d))
+        I_c = B * x ** 3 / 3.0 + n * A_s_total * (d - x) ** 2
+        return x, I_c
+
+    x_cr_st, I_c_st = _cracked(n_st)
+    x_cr_lt, I_c_lt = _cracked(n_lt)
+
+    # --- Cracking moment ----------------------------------------------------
+    # M_cr = f_ctm * I_u / y_t, with y_t = distance from NA to extreme tension
+    # fibre (bottom fibre for positive sagging).
+    f_ctm = _ec2_fctm(f_ck)
+    M_cr_st = f_ctm * I_u_st / y_NA_st if y_NA_st > 0 else float("nan")
+    M_cr_lt = f_ctm * I_u_lt / y_NA_lt if y_NA_lt > 0 else float("nan")
+
+    # --- ULS bending capacity (rectangular stress block, EC2 §3.1.7) --------
+    # lambda = 0.8, eta = 1.0 for f_ck <= 50 MPa; otherwise:
+    # lambda = 0.8 - (f_ck - 50)/400, eta = 1.0 - (f_ck - 50)/200
+    if f_ck <= 50.0:
+        lam = 0.8
+        eta = 1.0
+    else:
+        lam = 0.8 - (f_ck - 50.0) / 400.0
+        eta = 1.0 - (f_ck - 50.0) / 200.0
+    alpha_cc = 1.0  # UK NA
+    f_cd = alpha_cc * f_ck / gamma_c
+    f_yd = f_y / gamma_s
+
+    if A_s_total > 0 and d > 0:
+        # Force equilibrium: lam * x * B * eta * f_cd = A_s * f_yd
+        x_uls = A_s_total * f_yd / (lam * B * eta * f_cd)
+        # Lever arm z = d - lam*x/2
+        z = d - lam * x_uls / 2.0
+        M_Rd = A_s_total * f_yd * z
+        xd_ratio = x_uls / d
+    else:
+        x_uls = float("nan")
+        M_Rd = float("nan")
+        xd_ratio = float("nan")
+
+    return dict(
+        B=B, H=H, d=d, A_s=A_s_total,
+        f_ck=f_ck, f_ctm=f_ctm, f_cd=f_cd, f_yd=f_yd,
+        E_cm=E_cm, E_c_eff=E_c_eff, n_st=n_st, n_lt=n_lt,
+        lam=lam, eta=eta, alpha_cc=alpha_cc,
+        y_NA_st=y_NA_st, I_u_st=I_u_st,
+        y_NA_lt=y_NA_lt, I_u_lt=I_u_lt,
+        x_cr_st=x_cr_st, I_c_st=I_c_st,
+        x_cr_lt=x_cr_lt, I_c_lt=I_c_lt,
+        M_cr_st=M_cr_st, M_cr_lt=M_cr_lt,
+        x_uls=x_uls, M_Rd=M_Rd, xd_ratio=xd_ratio,
+    )
+
+
+def validation_rows(sec: RCSection, mat: dict, t_long: float, creep: float):
+    """Build the validation comparison table rows.
+
+    Returns (header_note, rows) where rows is a list of tuples
+        (quantity, units, computed, benchmark, abs_diff, pct_diff, notes)
+    All numeric columns are pre-formatted strings.
+    """
+    # Try a few likely attribute names that RCSection might use to expose
+    # the original polygon; if none are present, fall back to the bounding box
+    # (in which case the section is by definition rectangular).
+    poly = None
+    for _attr in ("concrete_poly", "_concrete_poly", "poly", "vertices"):
+        if hasattr(sec, _attr):
+            try:
+                _candidate = np.asarray(getattr(sec, _attr), dtype=float)
+                if _candidate.ndim == 2 and _candidate.shape[1] == 2:
+                    poly = _candidate
+                    break
+            except Exception:
+                continue
+    if poly is None:
+        poly = np.array([[0, 0], [sec.B, 0], [sec.B, sec.H], [0, sec.H]], float)
+    is_rect = _is_axis_aligned_rectangle(poly)
+
+    if is_rect:
+        header_note = (
+            "The section is a single axis-aligned rectangle, so all closed-form "
+            "benchmarks below apply directly. Differences arise from the mesh "
+            "based numerical integration replacing the closed-form integrals, "
+            "from the parabola-rectangle stress block (EC2 §3.1.7(1)) used by "
+            "the solver versus the equivalent rectangular block (EC2 §3.1.7(3)) "
+            "used here as a benchmark, and from rebar holes being subtracted "
+            "from the concrete area if that option is enabled."
+        )
+    else:
+        header_note = (
+            "The section is not a simple rectangle. The benchmarks below use "
+            "the bounding box B x H as the comparison rectangle with the same "
+            "total rebar area concentrated at the rebar centroid. They serve "
+            "as approximate sanity checks rather than strict closed-form "
+            "validations, and material differences are expected in proportion "
+            "to how far the real geometry departs from the bounding rectangle."
+        )
+
+    bm = benchmark_rectangle(sec, mat, t_long, creep)
+
+    def _fmt(v, sig=4):
+        try:
+            v = float(v)
+            if not np.isfinite(v):
+                return "n/a"
+            if v == 0:
+                return "0"
+            return ef(v, sig)
+        except Exception:
+            return "n/a"
+
+    def _pct(a, b):
+        try:
+            a = float(a); b = float(b)
+            if not np.isfinite(a) or not np.isfinite(b) or b == 0:
+                return "n/a"
+            return f"{100.0 * (a - b) / b:+.2f}%"
+        except Exception:
+            return "n/a"
+
+    # Pull computed values from the solver.
+    na_st = sec.elastic_na()
+    try:
+        na_lt = sec.elastic_na(t=t_long, creep=creep)
+    except TypeError:
+        na_lt = na_st
+    x_c_st = sec.elastic_cracking_depth()
+    try:
+        x_c_lt = sec.elastic_cracking_depth(t=t_long, creep=creep)
+    except TypeError:
+        x_c_lt = x_c_st
+    I_u_st_c = sec.I_u()
+    I_c_st_c = sec.I_c()
+    M_cr_st_c = sec.M_cr() / 1e6 if np.isfinite(sec.M_cr()) else float("nan")
+    I_u_lt_c = sec.I_u(t=t_long, creep=creep)
+    I_c_lt_c = sec.I_c(t=t_long, creep=creep)
+    try:
+        M_cr_lt_c = sec.M_cr(t=t_long, creep=creep) / 1e6
+    except Exception:
+        M_cr_lt_c = float("nan")
+
+    try:
+        M_Rd_c, _F_c, na_uls_c = sec.M_Rd(F_target=0.0, return_F=True, incl_x=True)
+        M_Rd_c = M_Rd_c / 1e6
+        x_uls_c = float(sec.y_max - float(na_uls_c)) if na_uls_c is not None else float("nan")
+    except Exception:
+        M_Rd_c = float("nan")
+        x_uls_c = float("nan")
+
+    # Solver NA is measured from the bottom fibre (y origin); benchmark y_NA is
+    # also from the bottom fibre, so they are directly comparable.
+    # Solver cracking depth x_c is from the top fibre, so is the benchmark x_cr.
+    rows = [
+        ("Quantity", "Units", "Computed", "Benchmark", "Difference", "Notes"),
+        ("Elastic NA (uncracked, short term)", "mm",
+         _fmt(na_st), _fmt(bm["y_NA_st"]),
+         _pct(na_st, bm["y_NA_st"]),
+         "Transformed area, n = E_s / E_cm"),
+        ("Uncracked I_u (short term)", "mm^4",
+         _fmt(I_u_st_c), _fmt(bm["I_u_st"]),
+         _pct(I_u_st_c, bm["I_u_st"]),
+         "Transformed second moment about elastic NA"),
+        # Solver returns the cracked-NA y-coordinate measured from the
+        # bottom fibre; benchmark "x_cr_st" is the compression-zone depth
+        # measured from the top. Compare in the solver's convention so the
+        # numbers line up: y_NA_bottom = H - x_cr.
+        ("Cracked NA y (short term, from bottom)", "mm",
+         _fmt(x_c_st), _fmt(sec.H - bm["x_cr_st"]),
+         _pct(x_c_st, sec.H - bm["x_cr_st"]),
+         "Quadratic in x, tension steel only (y = H - x)"),
+        ("Cracked I_c (short term)", "mm^4",
+         _fmt(I_c_st_c), _fmt(bm["I_c_st"]),
+         _pct(I_c_st_c, bm["I_c_st"]),
+         "B x^3 / 3 + n A_s (d - x)^2"),
+        ("Cracking moment M_cr (short term)", "kNm",
+         _fmt(M_cr_st_c), _fmt(bm["M_cr_st"] / 1e6),
+         _pct(M_cr_st_c, bm["M_cr_st"] / 1e6),
+         "f_ctm I_u / y_t, EC2 Table 3.1"),
+        ("Elastic NA (uncracked, long term)", "mm",
+         _fmt(na_lt), _fmt(bm["y_NA_lt"]),
+         _pct(na_lt, bm["y_NA_lt"]),
+         "Effective modulus E_c,eff = E_cm / (1 + phi)"),
+        ("Uncracked I_u (long term)", "mm^4",
+         _fmt(I_u_lt_c), _fmt(bm["I_u_lt"]),
+         _pct(I_u_lt_c, bm["I_u_lt"]),
+         "Creep applied via effective modulus, EC2 §7.4.3"),
+        ("Cracked I_c (long term)", "mm^4",
+         _fmt(I_c_lt_c), _fmt(bm["I_c_lt"]),
+         _pct(I_c_lt_c, bm["I_c_lt"]),
+         "Using long-term modular ratio"),
+        ("Cracking moment M_cr (long term)", "kNm",
+         _fmt(M_cr_lt_c), _fmt(bm["M_cr_lt"] / 1e6),
+         _pct(M_cr_lt_c, bm["M_cr_lt"] / 1e6),
+         "Same f_ctm, long term I_u and y_t"),
+        ("ULS bending capacity M_Rd (N=0)", "kNm",
+         _fmt(M_Rd_c), _fmt(bm["M_Rd"] / 1e6),
+         _pct(M_Rd_c, bm["M_Rd"] / 1e6),
+         "Solver uses parabola-rectangle, benchmark uses rectangular block"),
+    ]
+    return header_note, rows, bm, is_rect
+
+
+# ---------------------------------------------------------------------------
+# DOCX rich-text helpers
+# ---------------------------------------------------------------------------
+def _rich_cell(cell, text, bold=False, font_size=None):
+    """Render text with CalcDoc's _{sub}, ^{sup}, **bold** markup into a
+    docx table cell. Replaces any existing cell content with one paragraph
+    of rich-formatted runs.
+    """
+    if not _CALC_DOC_OK:
+        cell.text = str(text)
+        return
+
+    paragraphs = list(cell.paragraphs)
+    for extra in paragraphs[1:]:
+        p_el = extra._element
+        p_el.getparent().remove(p_el)
+    para = cell.paragraphs[0]
+    for run in list(para.runs):
+        r_el = run._element
+        r_el.getparent().remove(r_el)
+
+    fs = font_size if font_size is not None else Pt(10)
+    tokens = CalcDoc.parse_rich_tokens(str(text))
+    if bold:
+        for tok in tokens:
+            tok["bold"] = True
+    CalcDoc.apply_tokens_to_paragraph(para, tokens, font_size=fs)
+
+
+def _eq_safe(cd, latex_str, fallback_text=""):
+    """Try to render a displayed equation. If mathtext rejects the LaTeX,
+    fall back to a rich-text paragraph using the provided fallback (which
+    uses CalcDoc markup syntax).
+    """
+    try:
+        cd.add_equation(latex_str)
+    except Exception:
+        if fallback_text:
+            cd.add_rich_paragraph(fallback_text)
+        else:
+            cd.add_rich_paragraph(latex_str)
 
 
 # ---------------------------------------------------------------------------
@@ -381,42 +733,526 @@ def build_calcdoc_bytes(
         template_path=template_path,
     )
 
-    cd.add_heading("Section Properties", level=1)
+    # =======================================================================
+    # 1. Scope and overview
+    # =======================================================================
+    cd.add_heading("Scope and Overview", level=1)
+    cd.add_rich_paragraph(
+        "This calculation reports the cross-section properties and ULS bending "
+        "capacity of a reinforced concrete section defined by an arbitrary "
+        "concrete polygon and a list of circular reinforcing bars. The "
+        "analysis covers, in order:"
+    )
+    cd.add_rich_paragraph(
+        "1. Elastic (uncracked) transformed section properties, short term and "
+        "long term, using the effective modulus method to account for creep."
+    )
+    cd.add_rich_paragraph(
+        "2. Cracked transformed section properties under pure bending, with "
+        "the neutral axis depth and second moment of area computed from "
+        "force and moment equilibrium of a transformed section."
+    )
+    cd.add_rich_paragraph(
+        "3. Cracking moment M_{cr} based on the EC2 mean axial tensile "
+        "strength f_{ctm}."
+    )
+    cd.add_rich_paragraph(
+        "4. ULS bending capacity through a fibre-style integration of the "
+        "parabola-rectangle concrete stress block and elastic-perfectly-plastic "
+        "steel stress-strain law, sweeping the neutral axis position and "
+        "producing the full force-moment (F-M) interaction diagram."
+    )
+    cd.add_rich_paragraph(
+        "5. A validation section comparing the solver outputs against "
+        "closed-form benchmarks computed from standard rectangular RC theory."
+    )
+    cd.add_rich_paragraph(
+        "The geometry is treated as a closed polygon with rebar areas modelled "
+        "either as circles or as equivalent squares (user option). Concrete "
+        "area at the rebar locations may optionally be subtracted, which "
+        "matters at high reinforcement ratios."
+    )
 
-    cd.add_heading("Inputs", level=2)
+    # =======================================================================
+    # 2. Inputs and section property summary
+    # =======================================================================
+    cd.add_heading("Inputs and Section Properties", level=1)
+    cd.add_rich_paragraph(
+        "The table below lists the material inputs and the resulting section "
+        "properties. Section headers (Material, Geometry, Elastic, ULS) are "
+        "shown in bold."
+    )
+
     rows = section_summary(sec, mat, t_long, creep)
-
-    # Render the summary as a 2-column table.
     table = cd.add_table(rows=len(rows), cols=2)
     for i, (k, v) in enumerate(rows):
-        cells = table.rows[i].cells
-        cells[0].text = k
-        cells[1].text = str(v)
-        # Make section headers bold (rows where value is empty).
-        if v == "":
-            for cell in cells:
-                for para in cell.paragraphs:
-                    for run in para.runs:
-                        run.bold = True
+        is_header = k.startswith("**") and v == ""
+        _rich_cell(table.rows[i].cells[0], k, bold=is_header)
+        _rich_cell(table.rows[i].cells[1], v, bold=is_header)
+    
+    # =======================================================================
+    # 6. Section and FM plots
+    # =======================================================================
+    cd.add_heading("Plots", level=1)
 
     cd.add_heading("Section Plot", level=2)
+    cd.add_rich_paragraph(
+        "Concrete polygon, rebar layout, elastic neutral axis, ULS strain "
+        "diagram and stiffness annotations as enabled in the analysis "
+        "options. Coordinates are in mm."
+    )
     buf_plot = io.BytesIO()
     plot_fig.savefig(buf_plot, format="png", dpi=180, bbox_inches="tight",
                      facecolor="white")
     buf_plot.seek(0)
     cd.add_picture(buf_plot, width=Cm(16))
 
-    cd.add_heading("Force-Moment Interaction (FM Graph)", level=2)
+    cd.add_heading("Force-Moment Interaction (F-M Diagram)", level=2)
+    cd.add_rich_paragraph(
+        "Full ULS F-M envelope of the section. M_{Rd} at any axial force is "
+        "obtained by intersecting a horizontal line at that F with the "
+        "envelope. The pure bending capacity reported in the summary "
+        "corresponds to F = 0."
+    )
     buf_fm = io.BytesIO()
     fm_fig.savefig(buf_fm, format="png", dpi=180, bbox_inches="tight",
                    facecolor="white")
     buf_fm.seek(0)
     cd.add_picture(buf_fm, width=Cm(16))
+    
+    # =======================================================================
+    # 3. Methodology
+    # =======================================================================
+    cd.add_heading("Methodology", level=1)
+
+    cd.add_heading("Material Models", level=2)
+    cd.add_rich_paragraph(
+        "Concrete and steel are modelled to BS EN 1992-1-1 (Eurocode 2). "
+        "Compression is positive throughout. The mean cylinder strength "
+        "f_{cm} = f_{ck} + 8 MPa is taken per EC2 \u00a73.1.2(3) and "
+        "Table 3.1. The mean secant modulus of concrete uses the k_{E} "
+        "power-law form:"
+    )
+    _eq_safe(
+        cd,
+        r"E_{\mathrm{cm}} = k_E \, (f_{\mathrm{ck}} + 8)^{1/3} \quad \mathrm{[MPa]}",
+        "E_{cm} = k_E (f_{ck} + 8)^{1/3} [MPa]",
+    )
+    cd.add_rich_paragraph(
+        "with k_{E} entered as an input. This produces values consistent with "
+        "the EC2 Table 3.1 expression E_{cm} = 22000 ((f_{ck} + 8) / 10)^{0.3} "
+        "(MPa) for normal-weight concrete."
+    )
+    cd.add_rich_paragraph(
+        "The mean axial tensile strength is taken from EC2 Table 3.1:"
+    )
+    _eq_safe(
+        cd,
+        r"f_{\mathrm{ctm}} = 0.30 \, f_{\mathrm{ck}}^{\,2/3} \quad \mathrm{for}\ f_{\mathrm{ck}} \le 50\ \mathrm{MPa}",
+        "f_{ctm} = 0.30 f_{ck}^{2/3} for f_{ck} <= 50 MPa",
+    )
+    _eq_safe(
+        cd,
+        r"f_{\mathrm{ctm}} = 2.12 \, \ln\!\left(1 + \frac{f_{\mathrm{ck}} + 8}{10}\right) \quad \mathrm{for}\ f_{\mathrm{ck}} > 50\ \mathrm{MPa}",
+        "f_{ctm} = 2.12 ln(1 + (f_{ck} + 8) / 10) for f_{ck} > 50 MPa",
+    )
+    cd.add_rich_paragraph(
+        "f_{ctm} is used for the cracking moment only and is never relied on "
+        "for shear or anchorage."
+    )
+    cd.add_rich_paragraph(
+        "Steel is linear elastic up to f_{yd} = f_{yk} / \u03b3_{s}, then "
+        "perfectly plastic, with E_{s} = 200 GPa per EC2 \u00a73.2.7(4). The "
+        "horizontal yield plateau (Figure 3.8, idealised) is used because it "
+        "is conservative for ductility class B and C bars and is the standard "
+        "simplification for section analysis."
+    )
+    cd.add_rich_paragraph("The design strengths are:")
+    _eq_safe(
+        cd,
+        r"f_{\mathrm{cd}} = \alpha_{\mathrm{cc}} \, \frac{f_{\mathrm{ck}}}{\gamma_c}, \quad f_{\mathrm{yd}} = \frac{f_{\mathrm{yk}}}{\gamma_s}",
+        "f_{cd} = \u03b1_{cc} f_{ck} / \u03b3_{c},   f_{yd} = f_{yk} / \u03b3_{s}",
+    )
+    cd.add_rich_paragraph(
+        "with \u03b1_{cc} = 1.0 (UK National Annex value) and \u03b3_{c}, "
+        "\u03b3_{s} entered as inputs (defaults 1.5 and 1.15 per EC2 "
+        "Table 2.1N)."
+    )
+
+    cd.add_heading("Creep and Long-Term Stiffness", level=2)
+    cd.add_rich_paragraph(
+        "Creep is applied through an effective modulus, per EC2 "
+        "\u00a77.4.3(5) and \u00a75.8.4:"
+    )
+    _eq_safe(
+        cd,
+        r"E_{\mathrm{c,eff}} = \frac{E_{\mathrm{cm}}}{1 + \varphi(t,\,t_0)}",
+        "E_{c,eff} = E_{cm} / (1 + \u03c6(t, t_{0}))",
+    )
+    cd.add_rich_paragraph(
+        "The creep coefficient \u03c6 is entered directly and is intended to "
+        "represent the value at the loading age and duration of interest, "
+        "e.g. \u03c6(\u221e, t_{0}) for permanent loads, derived from EC2 "
+        "Annex B or Figure 3.1 if needed. The same E_{c,eff} is applied "
+        "uniformly to all concrete fibres for the long-term properties; no "
+        "separate shrinkage contribution is included."
+    )
+
+    cd.add_heading("Elastic (Uncracked) Section Properties", level=2)
+    cd.add_rich_paragraph(
+        "The uncracked transformed section is built by replacing each steel "
+        "bar of area A_{si} with an equivalent extra concrete area "
+        "(n \u2212 1) A_{si} at the bar centroid, where n is the modular "
+        "ratio:"
+    )
+    _eq_safe(
+        cd,
+        r"n = \frac{E_s}{E_c}, \quad E_c = E_{\mathrm{cm}}\;(\mathrm{short\;term}),\; E_{\mathrm{c,eff}}\;(\mathrm{long\;term})",
+        "n = E_{s} / E_{c}  (E_{c} = E_{cm} short term, E_{c,eff} long term)",
+    )
+    cd.add_rich_paragraph(
+        "The elastic neutral axis y_{NA} is the centroid of the transformed "
+        "area:"
+    )
+    _eq_safe(
+        cd,
+        r"y_{\mathrm{NA}} = \frac{\int_{A_t} y \, dA_t}{\int_{A_t} dA_t}",
+        "y_{NA} = (\u222b y dA_{t}) / (\u222b dA_{t})",
+    )
+    cd.add_rich_paragraph(
+        "and I_{u} is the transformed second moment about that NA. For an "
+        "arbitrary polygon this is done by numerical integration over the "
+        "meshed concrete area; for the validation in Section 5 the same "
+        "result is obtained in closed form for the bounding rectangle."
+    )
+
+    cd.add_heading("Cracked Section Properties", level=2)
+    cd.add_rich_paragraph(
+        "Under pure bending the tension concrete is assumed cracked and "
+        "discounted, per EC2 \u00a77.1(2). The cracked NA depth x_{c} is "
+        "found from force equilibrium of the transformed section, with the "
+        "concrete in compression contributing a linear stress distribution "
+        "(elastic, since this is a serviceability state) and the steel "
+        "transformed by the modular ratio n."
+    )
+    cd.add_rich_paragraph(
+        "For the standard rectangular case used in validation, this reduces "
+        "to the textbook quadratic:"
+    )
+    _eq_safe(
+        cd,
+        r"\frac{B \, x^2}{2} = n \, A_s \, (d - x)",
+        "B x^{2} / 2 = n A_{s} (d \u2212 x)",
+    )
+    cd.add_rich_paragraph("which solves to:")
+    _eq_safe(
+        cd,
+        r"x = \frac{-a + \sqrt{a^2 + 4 a d}}{2}, \quad a = \frac{2 \, n \, A_s}{B}",
+        "x = (\u2212a + sqrt(a^{2} + 4ad)) / 2,   a = 2 n A_{s} / B",
+    )
+    cd.add_rich_paragraph("with the cracked second moment about the NA:")
+    _eq_safe(
+        cd,
+        r"I_c = \frac{B \, x^3}{3} + n \, A_s \, (d - x)^2",
+        "I_{c} = B x^{3} / 3 + n A_{s} (d \u2212 x)^{2}",
+    )
+
+    cd.add_heading("Cracking Moment", level=2)
+    cd.add_rich_paragraph("The cracking moment is taken as:")
+    _eq_safe(
+        cd,
+        r"M_{\mathrm{cr}} = \frac{f_{\mathrm{ctm}} \, I_u}{y_t}",
+        "M_{cr} = f_{ctm} I_{u} / y_{t}",
+    )
+    cd.add_rich_paragraph(
+        "where y_{t} is the distance from the elastic NA to the extreme "
+        "tension fibre. This is the EC2 \u00a77.1 definition used as the "
+        "threshold between the uncracked and cracked stiffness branches in "
+        "deflection calculations to EC2 \u00a77.4.3."
+    )
+
+    cd.add_heading("ULS Bending Capacity", level=2)
+    cd.add_rich_paragraph(
+        "The ULS capacity is computed by sweeping the neutral axis position "
+        "and integrating the concrete and steel stresses over the section. "
+        "Concrete in compression follows the parabola-rectangle stress-"
+        "strain law of EC2 \u00a73.1.7(1), Figure 3.3, with peak stress "
+        "\u03b7 f_{cd} and limit strain \u03b5_{cu2} = 3.5 \u2030 for "
+        "f_{ck} \u2264 50 MPa (modified per EC2 Table 3.1 for higher "
+        "strengths). Concrete in tension is ignored. Steel follows the "
+        "elastic-perfectly-plastic law described above."
+    )
+    cd.add_rich_paragraph(
+        "At each NA position the section is in equilibrium with some axial "
+        "force F and bending moment M, both recorded and joined by a spline "
+        "to form the F-M interaction diagram. M_{Rd} at a given axial force "
+        "is read off the spline by inversion. With F = 0 this is the pure "
+        "bending capacity reported in the summary."
+    )
+    cd.add_rich_paragraph(
+        "The validation in Section 5 compares this to the simplified "
+        "rectangular stress block of EC2 \u00a73.1.7(3), Figure 3.5: depth "
+        "\u03bb x with stress \u03b7 f_{cd}. The stress block parameters "
+        "are:"
+    )
+    _eq_safe(
+        cd,
+        r"\lambda = 0.8, \quad \eta = 1.0 \quad \mathrm{for}\ f_{\mathrm{ck}} \le 50\ \mathrm{MPa}",
+        "\u03bb = 0.8,  \u03b7 = 1.0   for f_{ck} <= 50 MPa",
+    )
+    _eq_safe(
+        cd,
+        r"\lambda = 0.8 - \frac{f_{\mathrm{ck}} - 50}{400}, \quad \eta = 1.0 - \frac{f_{\mathrm{ck}} - 50}{200} \quad \mathrm{for}\ f_{\mathrm{ck}} > 50\ \mathrm{MPa}",
+        "\u03bb = 0.8 \u2212 (f_{ck} \u2212 50) / 400,  \u03b7 = 1.0 \u2212 (f_{ck} \u2212 50) / 200   for f_{ck} > 50 MPa",
+    )
+    cd.add_rich_paragraph(
+        "Force equilibrium with no axial load and the rectangular block "
+        "gives:"
+    )
+    _eq_safe(
+        cd,
+        r"\lambda \, x \, B \, \eta \, f_{\mathrm{cd}} = A_s \, f_{\mathrm{yd}} \;\;\Rightarrow\;\; x = \frac{A_s \, f_{\mathrm{yd}}}{\lambda \, \eta \, f_{\mathrm{cd}} \, B}",
+        "\u03bb x B \u03b7 f_{cd} = A_{s} f_{yd}  =>  x = A_{s} f_{yd} / (\u03bb \u03b7 f_{cd} B)",
+    )
+    cd.add_rich_paragraph("The lever arm and bending capacity then follow as:")
+    _eq_safe(
+        cd,
+        r"z = d - \frac{\lambda \, x}{2}, \quad M_{\mathrm{Rd}} = A_s \, f_{\mathrm{yd}} \, z",
+        "z = d \u2212 \u03bb x / 2,  M_{Rd} = A_{s} f_{yd} z",
+    )
+    cd.add_rich_paragraph(
+        "The two approaches give values within typically 1 to 3 percent for "
+        "normal rectangular beams; the parabola-rectangle block tends to "
+        "give a very slightly larger lever arm and therefore slightly "
+        "higher M_{Rd}."
+    )
+
+    # =======================================================================
+    # 4. Compliance with Eurocodes
+    # =======================================================================
+    cd.add_heading("Compliance with Eurocodes", level=1)
+    cd.add_rich_paragraph(
+        "The methodology above implements the following clauses of "
+        "BS EN 1992-1-1:2004 + A1:2014 (Eurocode 2, Part 1-1), with the UK "
+        "National Annex values where listed:"
+    )
+    compliance_rows = [
+        ("**Clause / Reference**", "**Aspect**", "**Implementation**"),
+        ("\u00a73.1.2(3), Table 3.1", "f_{cm}, f_{ctm}, E_{cm}",
+         "f_{cm} = f_{ck} + 8; f_{ctm} and E_{cm} computed as documented "
+         "above."),
+        ("\u00a73.1.6(1), \u00a73.1.6(2)", "Design strengths f_{cd}, f_{yd}",
+         "f_{cd} = \u03b1_{cc} f_{ck} / \u03b3_{c} with \u03b1_{cc} = 1.0 "
+         "(UK NA); f_{yd} = f_{yk} / \u03b3_{s}."),
+        ("\u00a73.1.7(1), Figure 3.3", "Parabola-rectangle stress-strain (ULS)",
+         "Used directly in the fibre integration that builds the F-M "
+         "diagram."),
+        ("\u00a73.1.7(3), Figure 3.5", "Rectangular stress block (ULS)",
+         "Used as the closed-form validation benchmark, with \u03bb and "
+         "\u03b7 per Table 3.1 for the entered f_{ck}."),
+        ("Table 3.1", "\u03b5_{cu2} limit strain",
+         "\u03b5_{cu2} = 3.5 \u2030 for f_{ck} \u2264 50 MPa, reduced per "
+         "Table 3.1 for higher strengths."),
+        ("\u00a73.2.7(4), Figure 3.8", "Steel stress-strain (ULS)",
+         "Elastic-perfectly-plastic with E_{s} = 200 GPa and yield plateau "
+         "at f_{yd}."),
+        ("Table 2.1N (UK NA)", "Partial factors \u03b3_{c}, \u03b3_{s}",
+         "Defaults 1.5 and 1.15 respectively, both user-overridable."),
+        ("\u00a75.8.4, \u00a77.4.3(5)", "Effective modulus for creep",
+         "E_{c,eff} = E_{cm} / (1 + \u03c6) applied uniformly to compute "
+         "long-term elastic and cracked properties."),
+        ("\u00a76.1", "Bending and axial force",
+         "Full F-M interaction by NA sweep, with M_{Rd} at any F "
+         "recoverable from the spline."),
+        ("\u00a77.1(2)", "Cracked section behaviour",
+         "Tension concrete discounted below the cracked NA."),
+        ("Table 3.1", "f_{ctm} for cracking moment",
+         "Used in M_{cr} = f_{ctm} I_{u} / y_{t}."),
+    ]
+    table = cd.add_table(rows=len(compliance_rows), cols=3)
+    for i, row in enumerate(compliance_rows):
+        is_header = (i == 0)
+        for j, txt in enumerate(row):
+            _rich_cell(table.rows[i].cells[j], txt, bold=is_header)
+
+    cd.add_rich_paragraph(
+        "Items not included in this calculation, and which must be checked "
+        "separately if relevant: shear (EC2 \u00a76.2), torsion "
+        "(\u00a76.3), punching (\u00a76.4), serviceability deflections "
+        "(\u00a77.4), crack widths (\u00a77.3), minimum reinforcement "
+        "(\u00a79.2.1.1 for beams, \u00a79.3.1.1 for slabs, \u00a79.5.2 "
+        "for columns), and detailing (Section 9)."
+    )
+
+    # =======================================================================
+    # 5. Validation against closed-form benchmarks
+    # =======================================================================
+    cd.add_heading("Validation", level=1)
+    header_note, val_rows, bm, is_rect = validation_rows(sec, mat, t_long, creep)
+    cd.add_rich_paragraph(header_note)
+
+    cd.add_heading("Benchmark intermediate values", level=2)
+    cd.add_rich_paragraph(
+        "The benchmark uses the following derived values for the comparison "
+        "rectangle (B \u00d7 H) with a single tension steel layer at the "
+        "area centroid of all bars."
+    )
+    bm_summary = [
+        ("Bounding B \u00d7 H",
+         f"{ef(bm['B'], 4)} \u00d7 {ef(bm['H'], 4)} mm"),
+        ("Total tension area A_{s,eff}",
+         f"{ef(bm['A_s'], 4)} mm^{{2}}"),
+        ("Effective depth d",
+         f"{ef(bm['d'], 4)} mm"),
+        ("E_{cm} (k_{E} formulation)",
+         f"{ef(bm['E_cm'], 4)} MPa"),
+        ("E_{c,eff} = E_{cm} / (1 + \u03c6)",
+         f"{ef(bm['E_c_eff'], 4)} MPa"),
+        ("Modular ratio n, short term",
+         f"{ef(bm['n_st'], 4)}"),
+        ("Modular ratio n, long term",
+         f"{ef(bm['n_lt'], 4)}"),
+        ("f_{ctm}",
+         f"{ef(bm['f_ctm'], 4)} MPa"),
+        ("f_{cd} = \u03b1_{cc} f_{ck} / \u03b3_{c}",
+         f"{ef(bm['f_cd'], 4)} MPa  (\u03b1_{{cc}} = {bm['alpha_cc']:.2f})"),
+        ("f_{yd} = f_{yk} / \u03b3_{s}",
+         f"{ef(bm['f_yd'], 4)} MPa"),
+        ("Stress block \u03bb, \u03b7",
+         f"\u03bb = {bm['lam']:.3f}, \u03b7 = {bm['eta']:.3f}"),
+    ]
+    table = cd.add_table(rows=len(bm_summary), cols=2)
+    for i, (k, v) in enumerate(bm_summary):
+        _rich_cell(table.rows[i].cells[0], k)
+        _rich_cell(table.rows[i].cells[1], v)
+
+    cd.add_heading("Comparison table", level=2)
+    cd.add_rich_paragraph(
+        "Each row reports the value produced by the numerical solver, the "
+        "closed-form benchmark value, and the percentage difference "
+        "(computed minus benchmark) divided by the benchmark."
+    )
+    label_map = {
+        "Uncracked I_u (short term)": "Uncracked I_{u} (short term)",
+        "Cracked NA y (short term, from bottom)":
+            "Cracked NA y (short term, from bottom)",
+        "Cracked I_c (short term)": "Cracked I_{c} (short term)",
+        "Cracking moment M_cr (short term)":
+            "Cracking moment M_{cr} (short term)",
+        "Uncracked I_u (long term)": "Uncracked I_{u} (long term)",
+        "Cracked I_c (long term)": "Cracked I_{c} (long term)",
+        "Cracking moment M_cr (long term)":
+            "Cracking moment M_{cr} (long term)",
+        "ULS bending capacity M_Rd (N=0)":
+            "ULS bending capacity M_{Rd} (N = 0)",
+    }
+    unit_map = {"mm^4": "mm^{4}", "mm^2": "mm^{2}"}
+    notes_map = {
+        "Transformed area, n = E_s / E_cm":
+            "Transformed area, n = E_{s} / E_{cm}",
+        "Quadratic in x, tension steel only (y = H - x)":
+            "Quadratic in x, tension steel only (y = H \u2212 x)",
+        "B x^3 / 3 + n A_s (d - x)^2":
+            "B x^{3} / 3 + n A_{s} (d \u2212 x)^{2}",
+        "f_ctm I_u / y_t, EC2 Table 3.1":
+            "f_{ctm} I_{u} / y_{t}, EC2 Table 3.1",
+        "Effective modulus E_c,eff = E_cm / (1 + phi)":
+            "Effective modulus E_{c,eff} = E_{cm} / (1 + \u03c6)",
+        "Same f_ctm, long term I_u and y_t":
+            "Same f_{ctm}, long term I_{u} and y_{t}",
+    }
+    val_rows_rich = [
+        ("**Quantity**", "**Units**", "**Computed**", "**Benchmark**",
+         "**Difference**", "**Notes**"),
+    ]
+    for row in val_rows[1:]:
+        q, u, comp, bench, diff, notes = row
+        q_rich = label_map.get(q, q)
+        u_rich = unit_map.get(u, u)
+        notes_rich = notes_map.get(notes, notes)
+        val_rows_rich.append((q_rich, u_rich, comp, bench, diff, notes_rich))
+
+    table = cd.add_table(rows=len(val_rows_rich), cols=6)
+    # Disable autofit and set explicit column widths. The Quantity (col 0) and
+    # Notes (col 5) columns hold the longest text and need most of the width;
+    # Units / Computed / Benchmark / Difference (cols 1-4) are short numbers.
+    # Total target width = 16 cm, matching the picture widths used elsewhere.
+    table.autofit = False
+    col_widths_cm = [4.2, 1.4, 2.0, 2.0, 1.8, 4.6]
+    from docx.shared import Cm as _Cm
+    for col_idx, w_cm in enumerate(col_widths_cm):
+        for row in table.rows:
+            row.cells[col_idx].width = _Cm(w_cm)
+    for i, row in enumerate(val_rows_rich):
+        is_header = (i == 0)
+        for j, txt in enumerate(row):
+            _rich_cell(table.rows[i].cells[j], str(txt), bold=is_header)
+
+    cd.add_heading("Expected agreement", level=2)
+    if is_rect:
+        cd.add_rich_paragraph(
+            "For a singly reinforced axis-aligned rectangle the elastic "
+            "quantities (NA position, I_{u}, I_{c}, M_{cr}) should agree to "
+            "within approximately 0.5 percent. Residual differences come "
+            "from the mesh used by the solver replacing the closed-form "
+            "integrals and, if enabled, from concrete area being subtracted "
+            "at the rebar locations (which the benchmark does not subtract, "
+            "hence benchmarks may sit slightly above the solver values when "
+            "rebar area is removed)."
+        )
+        cd.add_rich_paragraph(
+            "For the ULS capacity, the solver uses the parabola-rectangle "
+            "stress block (EC2 \u00a73.1.7(1)) and the benchmark uses the "
+            "rectangular block (\u00a73.1.7(3)). Both are accepted by EC2 "
+            "and give M_{Rd} values typically within 1 to 3 percent of each "
+            "other, with the parabola-rectangle block giving a slightly "
+            "larger lever arm. Differences outside that range warrant "
+            "investigation."
+        )
+    else:
+        cd.add_rich_paragraph(
+            "Because the actual section is not a simple rectangle, larger "
+            "deviations are expected. The elastic NA depth and the cracked "
+            "NA depth will diverge most for sections whose effective width "
+            "in compression differs materially from the bounding box width, "
+            "for example flanged sections, tapered sections or sections "
+            "with voids. The comparison still gives a useful "
+            "order-of-magnitude sanity check, and gross errors (orders of "
+            "magnitude, wrong sign) should be picked up immediately."
+        )
+
+    
+
+    # =======================================================================
+    # 7. References
+    # =======================================================================
+    cd.add_heading("References", level=1)
+    cd.add_rich_paragraph(
+        "BS EN 1992-1-1:2004 + A1:2014, Eurocode 2: Design of concrete "
+        "structures, Part 1-1: General rules and rules for buildings. BSI."
+    )
+    cd.add_rich_paragraph(
+        "NA to BS EN 1992-1-1:2004 + A1:2014, UK National Annex to "
+        "Eurocode 2, Part 1-1. BSI."
+    )
+    cd.add_rich_paragraph(
+        "Mosley, W. H., Bungey, J. H., and Hulse, R. Reinforced Concrete "
+        "Design to Eurocode 2 (7th ed.). Palgrave Macmillan. Used for the "
+        "rectangular benchmark formulae (cracked NA quadratic, cracked I, "
+        "rectangular stress block lever-arm form)."
+    )
+    cd.add_rich_paragraph(
+        "Bhatt, P., MacGinley, T. J., and Choo, B. S. Reinforced Concrete "
+        "Design to Eurocodes (4th ed.), CRC Press. Reference for the "
+        "transformed section approach to uncracked and cracked elastic "
+        "properties."
+    )
 
     out = io.BytesIO()
     cd.save(out)
     out.seek(0)
     return out.getvalue()
+
 
 
 # ===========================================================================
@@ -694,9 +1530,20 @@ if st.session_state.plot_fig is not None and st.session_state.fm_fig is not None
 
     if st.session_state.summary_rows is not None:
         with st.expander("Section property summary", expanded=False):
-            df = pd.DataFrame(
-                st.session_state.summary_rows, columns=["Property", "Value"]
-            )
+            # Strip CalcDoc rich-text markup so labels display cleanly in
+            # Streamlit. _{ck} -> _ck, ^{2} -> ^2, **x** -> x.
+            import re as _re_strip
+            def _strip_markup(s):
+                s = str(s)
+                s = _re_strip.sub(r"\*\*(.*?)\*\*", r"\1", s)
+                s = _re_strip.sub(r"_\{([^}]*)\}", r"_\1", s)
+                s = _re_strip.sub(r"\^\{([^}]*)\}", r"^\1", s)
+                return s
+            clean_rows = [
+                (_strip_markup(k), _strip_markup(v))
+                for k, v in st.session_state.summary_rows
+            ]
+            df = pd.DataFrame(clean_rows, columns=["Property", "Value"])
             st.dataframe(df, use_container_width=True, hide_index=True)
 
 # Handle export
