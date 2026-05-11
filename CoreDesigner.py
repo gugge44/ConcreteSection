@@ -708,7 +708,6 @@ if __name__ == "__main__":
         plt.title(f"{name}  (thicknesses: {thicknesses})")
         plt.show()
 
-exit()
 
 if __name__ == "__main__":
     w1 = PolyLine([[0,0],[2000,0],[2000,3000]])
