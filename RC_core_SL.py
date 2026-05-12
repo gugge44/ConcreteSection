@@ -339,39 +339,85 @@ def core_summary(core: CoreSection, mat: dict, t_long: float, creep: float):
     x_d_ratio = _safe_div(x_d, sec.d_ef)
 
     rows = [
-        ("Material", ""),
-        ("Concrete strength f_ck_28", f"{_safe_ef(mat['f_ck'])} MPa"),
+        ("**Material**", ""),
+        ("Concrete strength f_{ck,28}", f"{_safe_ef(mat['f_ck'])} MPa"),
         ("Cement class", mat["c_class"]),
-        ("Reference age t_ref", f"{_safe_ef(mat['t_ref'])} days"),
-        ("Modulus coefficient k_E", f"{_safe_ef(mat['k_E'])}"),
-        ("Steel yield f_y", f"{_safe_ef(mat['f_y'])} MPa"),
-        ("Partial factor gamma_c", f"{mat['gamma_c']:.2f}"),
-        ("Partial factor gamma_s", f"{mat['gamma_s']:.2f}"),
+        ("Reference age t_{ref}", f"{_safe_ef(mat['t_ref'])} days"),
+        ("Modulus coefficient k_{E}", f"{_safe_ef(mat['k_E'])}"),
+        ("Steel yield f_{y}", f"{_safe_ef(mat['f_y'])} MPa"),
+        ("Partial factor \u03b3_{c}", f"{mat['gamma_c']:.2f}"),
+        ("Partial factor \u03b3_{s}", f"{mat['gamma_s']:.2f}"),
         ("Verticals as outer layer", "Yes" if mat["verts_outer_layer"] else "No"),
-        ("Geometry", ""),
-        ("Number of walls (input)", f"{core.N_walls if hasattr(core, 'N_walls') else len(core.wall_lines)}"),
-        ("Bounding box B x H", f"{_safe_ef(sec.B)} x {_safe_ef(sec.H)} mm"),
-        ("Concrete area A_c", f"{_safe_ef(A_c)} mm^2"),
-        ("Steel area A_s", f"{_safe_ef(A_s)} mm^2"),
-        ("Reinforcement ratio rho", f"{rho:.2f}%"),
-        ("Effective depth d_ef", f"{_safe_ef(sec.d_ef)} mm"),
-        ("Elastic (uncracked) properties", ""),
+        ("**Geometry**", ""),
+        ("Number of walls (input)",
+         f"{core.N_walls if hasattr(core, 'N_walls') else len(core.wall_lines)}"),
+        ("Bounding box B \u00d7 H",
+         f"{_safe_ef(sec.B)} \u00d7 {_safe_ef(sec.H)} mm"),
+        ("Concrete area A_{c}", f"{_safe_ef(A_c)} mm^{{2}}"),
+        ("Steel area A_{s}", f"{_safe_ef(A_s)} mm^{{2}}"),
+        ("Reinforcement ratio \u03c1", f"{rho:.2f}%"),
+        ("Effective depth d_{ef}", f"{_safe_ef(sec.d_ef)} mm"),
+        ("**Elastic (uncracked) properties**", ""),
         ("Elastic NA y", f"{_safe_ef(na)} mm"),
-        ("Uncracked NA depth x_u", f"{_safe_ef(sec.y_max - na)} mm"),
-        ("Cracked NA depth x_c", f"{_safe_ef(x_c)} mm"),
-        ("Short term I_u", f"{_safe_ef(I_u_st)} mm^4"),
-        ("Short term I_c", f"{_safe_ef(I_c_st)} mm^4"),
-        ("Short term M_cr", f"{_safe_ef(M_cr_st_kNm)} kNm"),
-        ("Long term (t, phi)", f"t={_safe_ef(t_long / 365)} yrs, phi={_safe_ef(creep)}"),
-        ("Long term I_u", f"{_safe_ef(I_u_lt)} mm^4"),
-        ("Long term I_c", f"{_safe_ef(I_c_lt)} mm^4"),
-        ("Long term M_cr", f"{_safe_ef(M_cr_lt_kNm)} kNm"),
-        ("Ultimate limit state", ""),
-        ("Bending capacity M_Rd (F=0)", f"{_safe_ef(M_Rd_kNm)} kNm"),
-        ("Design NA depth x_d", f"{_safe_ef(x_d)} mm"),
-        ("Depth ratio x_d / d_ef", f"{_safe_ef(x_d_ratio)}"),
+        ("Uncracked NA depth x_{u}", f"{_safe_ef(sec.y_max - na)} mm"),
+        ("Cracked NA depth x_{c}", f"{_safe_ef(x_c)} mm"),
+        ("Short term I_{u}", f"{_safe_ef(I_u_st)} mm^{{4}}"),
+        ("Short term I_{c}", f"{_safe_ef(I_c_st)} mm^{{4}}"),
+        ("Short term M_{cr}", f"{_safe_ef(M_cr_st_kNm)} kNm"),
+        ("Long term (t, \u03c6)",
+         f"t = {_safe_ef(t_long / 365)} yrs, \u03c6 = {_safe_ef(creep)}"),
+        ("Long term I_{u}", f"{_safe_ef(I_u_lt)} mm^{{4}}"),
+        ("Long term I_{c}", f"{_safe_ef(I_c_lt)} mm^{{4}}"),
+        ("Long term M_{cr}", f"{_safe_ef(M_cr_lt_kNm)} kNm"),
+        ("**Ultimate limit state**", ""),
+        ("Bending capacity M_{Rd} (F = 0)", f"{_safe_ef(M_Rd_kNm)} kNm"),
+        ("Design NA depth x_{d}", f"{_safe_ef(x_d)} mm"),
+        ("Depth ratio x_{d} / d_{ef}", f"{_safe_ef(x_d_ratio)}"),
     ]
     return rows
+
+
+# ---------------------------------------------------------------------------
+# DOCX rich-text helpers
+# ---------------------------------------------------------------------------
+def _rich_cell(cell, text, bold=False, font_size=None):
+    """Render text with CalcDoc's _{sub}, ^{sup}, **bold** markup into a
+    docx table cell. Replaces any existing cell content with one paragraph
+    of rich-formatted runs.
+    """
+    if not _CALC_DOC_OK:
+        cell.text = str(text)
+        return
+
+    paragraphs = list(cell.paragraphs)
+    for extra in paragraphs[1:]:
+        p_el = extra._element
+        p_el.getparent().remove(p_el)
+    para = cell.paragraphs[0]
+    for run in list(para.runs):
+        r_el = run._element
+        r_el.getparent().remove(r_el)
+
+    fs = font_size if font_size is not None else Pt(10)
+    tokens = CalcDoc.parse_rich_tokens(str(text))
+    if bold:
+        for tok in tokens:
+            tok["bold"] = True
+    CalcDoc.apply_tokens_to_paragraph(para, tokens, font_size=fs)
+
+
+def _eq_safe(cd, latex_str, fallback_text=""):
+    """Try to render a displayed equation. If mathtext rejects the LaTeX,
+    fall back to a rich-text paragraph using the provided fallback (which
+    uses CalcDoc markup syntax).
+    """
+    try:
+        cd.add_equation(latex_str)
+    except Exception:
+        if fallback_text:
+            cd.add_rich_paragraph(fallback_text)
+        else:
+            cd.add_rich_paragraph(latex_str)
 
 
 # ---------------------------------------------------------------------------
@@ -411,76 +457,438 @@ def build_calcdoc_bytes(
         template_path=template_path,
     )
 
-    cd.add_heading("Core Section Properties", level=1)
+    # =======================================================================
+    # 1. Scope and overview
+    # =======================================================================
+    cd.add_heading("Scope and Overview", level=1)
+    cd.add_rich_paragraph(
+        "This calculation reports the cross-section properties and ULS "
+        "bending capacity of a reinforced concrete core. The core is "
+        "defined as an assembly of straight walls, each carrying its own "
+        "thickness, cover and per-face reinforcement (vertical and "
+        "horizontal bars). CoreDesigner merges the walls into a single "
+        "composite polygon, lays out the rebar grids on both faces of each "
+        "wall, and exposes the merged geometry as a standard "
+        "RCSection (core.v_section) for analysis. The analysis then covers, "
+        "in order:"
+    )
+    cd.add_rich_paragraph(
+        "1. Elastic (uncracked) transformed section properties of the "
+        "merged core, short term and long term, using the effective "
+        "modulus method to account for creep."
+    )
+    cd.add_rich_paragraph(
+        "2. Cracked transformed section properties under pure bending, "
+        "with the neutral axis depth and second moment of area computed "
+        "from force and moment equilibrium of a transformed section."
+    )
+    cd.add_rich_paragraph(
+        "3. Cracking moment M_{cr} based on the EC2 mean axial tensile "
+        "strength f_{ctm}."
+    )
+    cd.add_rich_paragraph(
+        "4. ULS bending capacity through a fibre-style integration of the "
+        "parabola-rectangle concrete stress block and elastic-perfectly-"
+        "plastic steel stress-strain law, sweeping the neutral axis "
+        "position and producing the full force-moment (F-M) interaction "
+        "diagram."
+    )
+    cd.add_rich_paragraph(
+        "All numerical work is carried out on the merged section. The "
+        "wall layout and detailing inputs are reported separately below "
+        "for traceability."
+    )
 
-    # --- Wall table ---
-    cd.add_heading("Wall geometry and detailing", level=2)
+    # =======================================================================
+    # 2. Wall geometry and detailing inputs
+    # =======================================================================
+    cd.add_heading("Inputs: Wall geometry and detailing", level=1)
+    cd.add_rich_paragraph(
+        "Each row of the table below defines one wall centre-line with its "
+        "thickness and per-face detailing. Face 0 lies on the +n side of "
+        "the wall direction (x_{1}, y_{1}) to (x_{2}, y_{2}); face 1 lies "
+        "on the opposite side. A cell shown as \"default\" means the wall "
+        "row was left blank for that field and the sidebar default was "
+        "used."
+    )
     cleaned = walls_df.dropna(subset=GEOM_COLS).reset_index(drop=True)
     table = cd.add_table(rows=len(cleaned) + 1, cols=len(WALL_COLS) + 1)
     header = ["Wall"] + WALL_COLS
     for j, h in enumerate(header):
-        cell = table.rows[0].cells[j]
-        cell.text = h
-        for para in cell.paragraphs:
-            for run in para.runs:
-                run.bold = True
+        _rich_cell(table.rows[0].cells[j], h, bold=True)
     for i, row in cleaned.iterrows():
-        cells = table.rows[i + 1].cells
-        cells[0].text = f"W{i + 1}"
+        _rich_cell(table.rows[i + 1].cells[0], f"W{i + 1}")
         for j, col in enumerate(WALL_COLS):
             v = row[col]
             if v is None or (isinstance(v, float) and not np.isfinite(v)):
-                cells[j + 1].text = "default"
+                _rich_cell(table.rows[i + 1].cells[j + 1], "default")
             else:
-                cells[j + 1].text = f"{float(v):g}"
+                _rich_cell(table.rows[i + 1].cells[j + 1], f"{float(v):g}")
 
-    # --- Per-face defaults ---
-    cd.add_heading("Detailing defaults (used when re-seeding the wall table)", level=2)
+    cd.add_heading("Detailing defaults", level=2)
+    cd.add_rich_paragraph(
+        "These values are substituted wherever a wall row leaves a "
+        "detailing cell blank."
+    )
     drows = [
-        ("Vertical bar diameter v_dia", f"{defaults['v_dia']} mm"),
-        ("Vertical bar spacing v_s", f"{defaults['v_s']} mm"),
-        ("Horizontal bar diameter h_dia", f"{defaults['h_dia']} mm"),
-        ("Horizontal bar spacing h_s", f"{defaults['h_s']} mm"),
+        ("Vertical bar diameter v_{dia}", f"{defaults['v_dia']} mm"),
+        ("Vertical bar spacing v_{s}", f"{defaults['v_s']} mm"),
+        ("Horizontal bar diameter h_{dia}", f"{defaults['h_dia']} mm"),
+        ("Horizontal bar spacing h_{s}", f"{defaults['h_s']} mm"),
         ("Cover", f"{defaults['cover']} mm"),
+        ("Verticals as outer layer",
+         "Yes" if mat["verts_outer_layer"] else "No"),
     ]
     dtable = cd.add_table(rows=len(drows), cols=2)
     for i, (k, v) in enumerate(drows):
-        dtable.rows[i].cells[0].text = k
-        dtable.rows[i].cells[1].text = str(v)
+        _rich_cell(dtable.rows[i].cells[0], k)
+        _rich_cell(dtable.rows[i].cells[1], v)
 
-    # --- Property summary ---
-    cd.add_heading("Section property summary", level=2)
+    # =======================================================================
+    # 3. Section property summary (merged section)
+    # =======================================================================
+    cd.add_heading("Merged section property summary", level=1)
+    cd.add_rich_paragraph(
+        "Properties of the merged core section. Section headers (Material, "
+        "Geometry, Elastic, ULS) are shown in bold."
+    )
     rows = core_summary(core, mat, t_long, creep)
     table = cd.add_table(rows=len(rows), cols=2)
     for i, (k, v) in enumerate(rows):
-        cells = table.rows[i].cells
-        cells[0].text = k
-        cells[1].text = str(v)
-        if v == "":
-            for cell in cells:
-                for para in cell.paragraphs:
-                    for run in para.runs:
-                        run.bold = True
+        is_header = k.startswith("**") and v == ""
+        _rich_cell(table.rows[i].cells[0], k, bold=is_header)
+        _rich_cell(table.rows[i].cells[1], v, bold=is_header)
 
-    # --- Plots ---
+    # =======================================================================
+    # 4. Methodology
+    # =======================================================================
+    cd.add_heading("Methodology", level=1)
+
+    cd.add_heading("Material Models", level=2)
+    cd.add_rich_paragraph(
+        "Concrete and steel are modelled to BS EN 1992-1-1 (Eurocode 2). "
+        "Compression is positive throughout. The mean cylinder strength "
+        "f_{cm} = f_{ck} + 8 MPa is taken per EC2 \u00a73.1.2(3) and "
+        "Table 3.1. The mean secant modulus of concrete uses the k_{E} "
+        "power-law form:"
+    )
+    _eq_safe(
+        cd,
+        r"E_{\mathrm{cm}} = k_E \, (f_{\mathrm{ck}} + 8)^{1/3} \quad \mathrm{[MPa]}",
+        "E_{cm} = k_E (f_{ck} + 8)^{1/3} [MPa]",
+    )
+    cd.add_rich_paragraph(
+        "with k_{E} entered as an input. This produces values consistent "
+        "with the EC2 Table 3.1 expression E_{cm} = 22000 ((f_{ck} + 8) / "
+        "10)^{0.3} (MPa) for normal-weight concrete."
+    )
+    cd.add_rich_paragraph(
+        "The mean axial tensile strength is taken from EC2 Table 3.1:"
+    )
+    _eq_safe(
+        cd,
+        r"f_{\mathrm{ctm}} = 0.30 \, f_{\mathrm{ck}}^{\,2/3} \quad \mathrm{for}\ f_{\mathrm{ck}} \le 50\ \mathrm{MPa}",
+        "f_{ctm} = 0.30 f_{ck}^{2/3} for f_{ck} <= 50 MPa",
+    )
+    _eq_safe(
+        cd,
+        r"f_{\mathrm{ctm}} = 2.12 \, \ln\!\left(1 + \frac{f_{\mathrm{ck}} + 8}{10}\right) \quad \mathrm{for}\ f_{\mathrm{ck}} > 50\ \mathrm{MPa}",
+        "f_{ctm} = 2.12 ln(1 + (f_{ck} + 8) / 10) for f_{ck} > 50 MPa",
+    )
+    cd.add_rich_paragraph(
+        "f_{ctm} is used for the cracking moment only and is never relied "
+        "on for shear or anchorage."
+    )
+    cd.add_rich_paragraph(
+        "Steel is linear elastic up to f_{yd} = f_{yk} / \u03b3_{s}, then "
+        "perfectly plastic, with E_{s} = 200 GPa per EC2 \u00a73.2.7(4). "
+        "The horizontal yield plateau (Figure 3.8, idealised) is used "
+        "because it is conservative for ductility class B and C bars and "
+        "is the standard simplification for section analysis."
+    )
+    cd.add_rich_paragraph("The design strengths are:")
+    _eq_safe(
+        cd,
+        r"f_{\mathrm{cd}} = \alpha_{\mathrm{cc}} \, \frac{f_{\mathrm{ck}}}{\gamma_c}, \quad f_{\mathrm{yd}} = \frac{f_{\mathrm{yk}}}{\gamma_s}",
+        "f_{cd} = \u03b1_{cc} f_{ck} / \u03b3_{c},   f_{yd} = f_{yk} / \u03b3_{s}",
+    )
+    cd.add_rich_paragraph(
+        "with \u03b1_{cc} = 1.0 (UK National Annex value) and \u03b3_{c}, "
+        "\u03b3_{s} entered as inputs (defaults 1.5 and 1.15 per EC2 "
+        "Table 2.1N)."
+    )
+
+    cd.add_heading("Core Geometry Assembly", level=2)
+    cd.add_rich_paragraph(
+        "Each wall is defined by its centre-line and a uniform thickness. "
+        "CoreDesigner generates the wall polygon as a constant-offset "
+        "buffer around the centre-line, then merges all wall polygons "
+        "into a single composite concrete region by polygon union. The "
+        "merged outline is what the section analysis sees; junctions "
+        "between walls become continuous regions of concrete with no "
+        "double-counting at overlaps."
+    )
+    cd.add_rich_paragraph(
+        "Rebar is laid out independently on each face of each wall, "
+        "running along the wall centre-line. The vertical and horizontal "
+        "bar grids honour the entered diameters, spacings and covers. "
+        "The verts_outer_layer flag controls layer order at the face: "
+        "if true, vertical bars sit at depth cover + v_{dia} / 2 from "
+        "the face and horizontals sit one bar-diameter deeper; if false, "
+        "the order is swapped. This matches typical site practice for "
+        "either bar-first detail. Where two walls meet at an inside "
+        "corner, the duplicated rebar near the junction is removed to "
+        "avoid counting the same area twice."
+    )
+
+    cd.add_heading("Creep and Long-Term Stiffness", level=2)
+    cd.add_rich_paragraph(
+        "Creep is applied through an effective modulus, per EC2 "
+        "\u00a77.4.3(5) and \u00a75.8.4:"
+    )
+    _eq_safe(
+        cd,
+        r"E_{\mathrm{c,eff}} = \frac{E_{\mathrm{cm}}}{1 + \varphi(t,\,t_0)}",
+        "E_{c,eff} = E_{cm} / (1 + \u03c6(t, t_{0}))",
+    )
+    cd.add_rich_paragraph(
+        "The creep coefficient \u03c6 is entered directly and is intended "
+        "to represent the value at the loading age and duration of "
+        "interest, e.g. \u03c6(\u221e, t_{0}) for permanent loads, "
+        "derived from EC2 Annex B or Figure 3.1 if needed. The same "
+        "E_{c,eff} is applied uniformly to all concrete fibres for the "
+        "long-term properties; no separate shrinkage contribution is "
+        "included."
+    )
+
+    cd.add_heading("Elastic (Uncracked) Section Properties", level=2)
+    cd.add_rich_paragraph(
+        "The uncracked transformed section is built by replacing each "
+        "steel bar of area A_{si} with an equivalent extra concrete area "
+        "(n \u2212 1) A_{si} at the bar centroid, where n is the modular "
+        "ratio:"
+    )
+    _eq_safe(
+        cd,
+        r"n = \frac{E_s}{E_c}, \quad E_c = E_{\mathrm{cm}}\;(\mathrm{short\;term}),\; E_{\mathrm{c,eff}}\;(\mathrm{long\;term})",
+        "n = E_{s} / E_{c}  (E_{c} = E_{cm} short term, E_{c,eff} long term)",
+    )
+    cd.add_rich_paragraph(
+        "The elastic neutral axis y_{NA} is the centroid of the "
+        "transformed area:"
+    )
+    _eq_safe(
+        cd,
+        r"y_{\mathrm{NA}} = \frac{\int_{A_t} y \, dA_t}{\int_{A_t} dA_t}",
+        "y_{NA} = (\u222b y dA_{t}) / (\u222b dA_{t})",
+    )
+    cd.add_rich_paragraph(
+        "and I_{u} is the transformed second moment about that NA. For "
+        "the merged core polygon (which is generally non-rectangular) "
+        "the integrals are evaluated by numerical integration over the "
+        "meshed concrete area plus a discrete sum over the rebar bars."
+    )
+
+    cd.add_heading("Cracked Section Properties", level=2)
+    cd.add_rich_paragraph(
+        "Under pure bending the tension concrete is assumed cracked and "
+        "discounted, per EC2 \u00a77.1(2). The cracked NA depth x_{c} is "
+        "found from force equilibrium of the transformed section, with "
+        "the concrete in compression contributing a linear stress "
+        "distribution (elastic, since this is a serviceability state) "
+        "and the steel transformed by the modular ratio n. For a core "
+        "with steel distributed along multiple walls the equilibrium is "
+        "solved numerically rather than via the textbook quadratic that "
+        "applies to a singly-reinforced rectangle. The cracked second "
+        "moment is then taken about that NA."
+    )
+
+    cd.add_heading("Cracking Moment", level=2)
+    cd.add_rich_paragraph("The cracking moment is taken as:")
+    _eq_safe(
+        cd,
+        r"M_{\mathrm{cr}} = \frac{f_{\mathrm{ctm}} \, I_u}{y_t}",
+        "M_{cr} = f_{ctm} I_{u} / y_{t}",
+    )
+    cd.add_rich_paragraph(
+        "where y_{t} is the distance from the elastic NA to the extreme "
+        "tension fibre. This is the EC2 \u00a77.1 definition used as the "
+        "threshold between the uncracked and cracked stiffness branches "
+        "in deflection calculations to EC2 \u00a77.4.3."
+    )
+
+    cd.add_heading("ULS Bending Capacity", level=2)
+    cd.add_rich_paragraph(
+        "The ULS capacity is computed by sweeping the neutral axis "
+        "position and integrating the concrete and steel stresses over "
+        "the merged core section. Concrete in compression follows the "
+        "parabola-rectangle stress-strain law of EC2 \u00a73.1.7(1), "
+        "Figure 3.3, with peak stress \u03b7 f_{cd} and limit strain "
+        "\u03b5_{cu2} = 3.5 \u2030 for f_{ck} \u2264 50 MPa (modified per "
+        "EC2 Table 3.1 for higher strengths). Concrete in tension is "
+        "ignored. Steel follows the elastic-perfectly-plastic law "
+        "described above."
+    )
+    cd.add_rich_paragraph(
+        "The parabola-rectangle stress block parameters \u03bb and "
+        "\u03b7 are:"
+    )
+    _eq_safe(
+        cd,
+        r"\lambda = 0.8, \quad \eta = 1.0 \quad \mathrm{for}\ f_{\mathrm{ck}} \le 50\ \mathrm{MPa}",
+        "\u03bb = 0.8,  \u03b7 = 1.0   for f_{ck} <= 50 MPa",
+    )
+    _eq_safe(
+        cd,
+        r"\lambda = 0.8 - \frac{f_{\mathrm{ck}} - 50}{400}, \quad \eta = 1.0 - \frac{f_{\mathrm{ck}} - 50}{200} \quad \mathrm{for}\ f_{\mathrm{ck}} > 50\ \mathrm{MPa}",
+        "\u03bb = 0.8 \u2212 (f_{ck} \u2212 50) / 400,  \u03b7 = 1.0 \u2212 (f_{ck} \u2212 50) / 200   for f_{ck} > 50 MPa",
+    )
+    cd.add_rich_paragraph(
+        "At each NA position the section is in equilibrium with some "
+        "axial force F and bending moment M, both recorded and joined by "
+        "a spline to form the F-M interaction diagram. M_{Rd} at a given "
+        "axial force is read off the spline by inversion. With F = 0 "
+        "this is the pure bending capacity reported in the summary. The "
+        "F-M envelope captures the interaction useful for combined "
+        "axial-bending check of the core lift, e.g. where wind moments "
+        "act simultaneously with gravity axial load."
+    )
+    cd.add_rich_paragraph(
+        "Bending is reported about the analysis axis used by "
+        "CoreDesigner. To capture biaxial bending and the resistance "
+        "about both principal axes of the core, the section can be "
+        "rotated and re-run; only the single-axis F-M is included here."
+    )
+
+    # =======================================================================
+    # 5. Compliance with Eurocodes
+    # =======================================================================
+    cd.add_heading("Compliance with Eurocodes", level=1)
+    cd.add_rich_paragraph(
+        "The methodology above implements the following clauses of "
+        "BS EN 1992-1-1:2004 + A1:2014 (Eurocode 2, Part 1-1), with the "
+        "UK National Annex values where listed:"
+    )
+    compliance_rows = [
+        ("**Clause / Reference**", "**Aspect**", "**Implementation**"),
+        ("\u00a73.1.2(3), Table 3.1", "f_{cm}, f_{ctm}, E_{cm}",
+         "f_{cm} = f_{ck} + 8; f_{ctm} and E_{cm} computed as documented "
+         "above."),
+        ("\u00a73.1.6(1), \u00a73.1.6(2)", "Design strengths f_{cd}, f_{yd}",
+         "f_{cd} = \u03b1_{cc} f_{ck} / \u03b3_{c} with \u03b1_{cc} = 1.0 "
+         "(UK NA); f_{yd} = f_{yk} / \u03b3_{s}."),
+        ("\u00a73.1.7(1), Figure 3.3", "Parabola-rectangle stress-strain (ULS)",
+         "Used directly in the fibre integration that builds the F-M "
+         "diagram."),
+        ("Table 3.1", "\u03b5_{cu2} limit strain",
+         "\u03b5_{cu2} = 3.5 \u2030 for f_{ck} \u2264 50 MPa, reduced per "
+         "Table 3.1 for higher strengths."),
+        ("\u00a73.2.7(4), Figure 3.8", "Steel stress-strain (ULS)",
+         "Elastic-perfectly-plastic with E_{s} = 200 GPa and yield "
+         "plateau at f_{yd}."),
+        ("Table 2.1N (UK NA)", "Partial factors \u03b3_{c}, \u03b3_{s}",
+         "Defaults 1.5 and 1.15 respectively, both user-overridable."),
+        ("\u00a75.8.4, \u00a77.4.3(5)", "Effective modulus for creep",
+         "E_{c,eff} = E_{cm} / (1 + \u03c6) applied uniformly to compute "
+         "long-term elastic and cracked properties."),
+        ("\u00a76.1", "Bending and axial force",
+         "Full F-M interaction by NA sweep, with M_{Rd} at any F "
+         "recoverable from the spline."),
+        ("\u00a77.1(2)", "Cracked section behaviour",
+         "Tension concrete discounted below the cracked NA."),
+        ("Table 3.1", "f_{ctm} for cracking moment",
+         "Used in M_{cr} = f_{ctm} I_{u} / y_{t}."),
+        ("\u00a79.6", "Reinforced concrete walls, minimum reinforcement",
+         "Not checked by this calculation. The user must verify minimum "
+         "v_{s,min}, h_{s,min} and minimum reinforcement ratios "
+         "separately against \u00a79.6.2 to \u00a79.6.4."),
+    ]
+    table = cd.add_table(rows=len(compliance_rows), cols=3)
+    # Set explicit column widths so the long Implementation column is
+    # readable. Total target width is 16 cm (matches the picture widths).
+    table.autofit = False
+    col_widths_cm = [3.0, 4.5, 8.5]
+    from docx.shared import Cm as _Cm
+    for col_idx, w_cm in enumerate(col_widths_cm):
+        for row in table.rows:
+            row.cells[col_idx].width = _Cm(w_cm)
+    for i, row in enumerate(compliance_rows):
+        is_header = (i == 0)
+        for j, txt in enumerate(row):
+            _rich_cell(table.rows[i].cells[j], txt, bold=is_header)
+
+    cd.add_rich_paragraph(
+        "Items not included in this calculation, and which must be "
+        "checked separately if relevant: shear (EC2 \u00a76.2), torsion "
+        "(\u00a76.3), serviceability deflections (\u00a77.4), crack "
+        "widths (\u00a77.3), wall slenderness and second-order effects "
+        "(\u00a75.8), buckling of the compression edge, minimum "
+        "reinforcement and detailing (\u00a79.6), in-plane shear and "
+        "boundary element checks where the core acts as a shear wall "
+        "system, and any biaxial bending interaction beyond the single "
+        "F-M plane reported here."
+    )
+
+    # =======================================================================
+    # 6. Section and FM plots
+    # =======================================================================
+    cd.add_heading("Plots", level=1)
+
     cd.add_heading("Section Plot", level=2)
+    cd.add_rich_paragraph(
+        "Merged core polygon, rebar layout, elastic neutral axis, ULS "
+        "strain diagram and stiffness annotations as enabled in the "
+        "analysis options. Coordinates are in mm."
+    )
     buf_plot = io.BytesIO()
     plot_fig.savefig(buf_plot, format="png", dpi=180, bbox_inches="tight",
                      facecolor="white")
     buf_plot.seek(0)
     cd.add_picture(buf_plot, width=Cm(16))
 
-    cd.add_heading("Force-Moment Interaction (FM Graph)", level=2)
+    cd.add_heading("Force-Moment Interaction (F-M Diagram)", level=2)
+    cd.add_rich_paragraph(
+        "Full ULS F-M envelope of the core section. M_{Rd} at any axial "
+        "force is obtained by intersecting a horizontal line at that F "
+        "with the envelope. The pure bending capacity reported in the "
+        "summary corresponds to F = 0."
+    )
     buf_fm = io.BytesIO()
     fm_fig.savefig(buf_fm, format="png", dpi=180, bbox_inches="tight",
                    facecolor="white")
     buf_fm.seek(0)
     cd.add_picture(buf_fm, width=Cm(16))
 
+    # =======================================================================
+    # 7. References
+    # =======================================================================
+    cd.add_heading("References", level=1)
+    cd.add_rich_paragraph(
+        "BS EN 1992-1-1:2004 + A1:2014, Eurocode 2: Design of concrete "
+        "structures, Part 1-1: General rules and rules for buildings. BSI."
+    )
+    cd.add_rich_paragraph(
+        "NA to BS EN 1992-1-1:2004 + A1:2014, UK National Annex to "
+        "Eurocode 2, Part 1-1. BSI."
+    )
+    cd.add_rich_paragraph(
+        "Mosley, W. H., Bungey, J. H., and Hulse, R. Reinforced Concrete "
+        "Design to Eurocode 2 (7th ed.). Palgrave Macmillan. General "
+        "reference for the rectangular and parabola-rectangle stress "
+        "blocks and the transformed section approach."
+    )
+    cd.add_rich_paragraph(
+        "Bhatt, P., MacGinley, T. J., and Choo, B. S. Reinforced Concrete "
+        "Design to Eurocodes (4th ed.), CRC Press. Reference for the "
+        "transformed section approach to uncracked and cracked elastic "
+        "properties."
+    )
+
     out = io.BytesIO()
     cd.save(out)
     out.seek(0)
     return out.getvalue()
+
 
 
 # ===========================================================================
@@ -613,46 +1021,60 @@ col_inputs, col_preview = st.columns([1.4, 1.0])
 with col_inputs:
     st.markdown("**Wall centre-lines and per-wall detailing**")
 
-    # Build a FRESH DataFrame each rerun from the ndarray in state. This
-    # is the same pattern the working RC_beam_SL.py uses. Do NOT pass
-    # st.session_state.walls directly into data_editor and write back to
-    # the same slot: that creates a reactive identity loop.
-    walls_df = pd.DataFrame(st.session_state.walls, columns=WALL_COLS)
-    edited = st.data_editor(
-        walls_df,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="walls_editor",
-        height=380,
-        column_config={
-            c: st.column_config.NumberColumn(format="%.1f")
-            for c in WALL_COLS
-        },
-    )
+    # The data_editor lives inside an st.form so cell edits are batched
+    # locally and do not trigger a rerun until the submit button is clicked.
+    # Without this, every cell edit fires a full page rerun and the user
+    # loses focus mid-typing (Streamlit docs: st.form; discuss.streamlit.io
+    # threads 42886, 52793, 91924). Edits stay in the editor's local state
+    # until "Apply wall edits" is pressed.
+    with st.form("walls_form", clear_on_submit=False):
+        walls_df = pd.DataFrame(st.session_state.walls, columns=WALL_COLS)
+        edited = st.data_editor(
+            walls_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="walls_editor",
+            height=380,
+            column_config={
+                c: st.column_config.NumberColumn(format="%.1f")
+                for c in WALL_COLS
+            },
+        )
+        walls_submitted = st.form_submit_button(
+            "Apply wall edits", type="primary",
+            use_container_width=True,
+        )
 
-    # Commit: convert back to ndarray. The type round-trip
-    # (ndarray -> DataFrame -> editor -> DataFrame -> ndarray) is what
-    # breaks the reactive loop.
-    try:
-        cleaned = edited.dropna(how="all")
-        if len(cleaned) > 0:
-            st.session_state.walls = cleaned.to_numpy(dtype=float)
-        else:
-            st.session_state.walls = np.empty((0, len(WALL_COLS)), float)
-    except Exception:
-        # Don't blow up on a transient mid-edit state; keep the previous
-        # ndarray and let the user finish typing.
-        pass
+    if walls_submitted:
+        # Commit: convert back to ndarray. The type round-trip
+        # (ndarray -> DataFrame -> editor -> DataFrame -> ndarray) is what
+        # breaks the reactive identity loop.
+        try:
+            cleaned = edited.dropna(how="all")
+            if len(cleaned) > 0:
+                st.session_state.walls = cleaned.to_numpy(dtype=float)
+                st.success(f"\u2713 {len(cleaned)} walls applied.")
+            else:
+                st.session_state.walls = np.empty((0, len(WALL_COLS)), float)
+                st.warning("No walls defined.")
+        except Exception as ex:
+            st.warning(f"Wall parse issue: {ex}")
 
+    # Geometry mutation buttons live OUTSIDE the form (st.button is not
+    # allowed inside a form). They overwrite st.session_state.walls
+    # directly and rerun, which redraws the editor from the new state.
+    st.markdown("---")
     c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("Reset C-shape", use_container_width=True,
+                     key="btn_reset_cshape",
                      help="Re-seed the table with the default 3 m C-shape "
                           "using current sidebar detailing defaults."):
             st.session_state.walls = _default_walls(defaults)
             st.rerun()
     with c2:
         if st.button("Add blank row", use_container_width=True,
+                     key="btn_add_row",
                      help="Append a new wall row, pre-filled with current "
                           "sidebar detailing defaults and zero geometry."):
             new_row = np.array(
@@ -662,7 +1084,8 @@ with col_inputs:
             st.session_state.walls = np.vstack([st.session_state.walls, new_row])
             st.rerun()
     with c3:
-        if st.button("Clear all walls", use_container_width=True):
+        if st.button("Clear all walls", use_container_width=True,
+                     key="btn_clear_walls"):
             st.session_state.walls = np.empty((0, len(WALL_COLS)), float)
             st.rerun()
 
@@ -748,9 +1171,20 @@ if st.session_state.plot_fig is not None and st.session_state.fm_fig is not None
 
     if st.session_state.summary_rows is not None:
         with st.expander("Section property summary", expanded=False):
-            df = pd.DataFrame(
-                st.session_state.summary_rows, columns=["Property", "Value"]
-            )
+            # Strip CalcDoc rich-text markup so labels display cleanly in
+            # Streamlit. _{ck} -> _ck, ^{2} -> ^2, **x** -> x.
+            import re as _re_strip
+            def _strip_markup(s):
+                s = str(s)
+                s = _re_strip.sub(r"\*\*(.*?)\*\*", r"\1", s)
+                s = _re_strip.sub(r"_\{([^}]*)\}", r"_\1", s)
+                s = _re_strip.sub(r"\^\{([^}]*)\}", r"^\1", s)
+                return s
+            clean_rows = [
+                (_strip_markup(k), _strip_markup(v))
+                for k, v in st.session_state.summary_rows
+            ]
+            df = pd.DataFrame(clean_rows, columns=["Property", "Value"])
             st.dataframe(df, use_container_width=True, hide_index=True)
 
 # Handle export
